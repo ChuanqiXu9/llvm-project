@@ -33,6 +33,7 @@
 namespace llvm {
 
 class PostDominatorTree;
+class FuncSpecCostInfo;
 
 /// This pass performs function-level constant propagation and merging.
 class SCCPPass : public PassInfoMixin<SCCPPass> {
@@ -49,6 +50,7 @@ bool runFunctionSpecialization(
     std::function<TargetLibraryInfo &(Function &)> GetTLI,
     std::function<TargetTransformInfo &(Function &)> GetTTI,
     std::function<AssumptionCache &(Function &)> GetAC,
+    std::function<FuncSpecCostInfo &(Function &)> GetFSCI,
     function_ref<AnalysisResultsForFn(Function &)> GetAnalysis);
 } // end namespace llvm
 

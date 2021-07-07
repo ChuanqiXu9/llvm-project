@@ -27,6 +27,7 @@
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/DomTreeUpdater.h"
+#include "llvm/Analysis/FuncSpecCost.h"
 #include "llvm/Analysis/InlineCost.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -57,11 +58,6 @@ static cl::opt<unsigned> MaxConstantsThreshold(
     cl::desc("The maximum number of clones allowed for a single function "
              "specialization"),
     cl::init(3));
-
-static cl::opt<unsigned>
-    AvgLoopIterationCount("func-specialization-avg-iters-cost", cl::Hidden,
-                          cl::desc("Average loop iteration count cost"),
-                          cl::init(10));
 
 static cl::opt<bool> EnableSpecializationForLiteralConstant(
     "function-specialization-for-literal-constant", cl::init(false), cl::Hidden,
@@ -214,6 +210,7 @@ class FunctionSpecializer {
   std::function<AssumptionCache &(Function &)> GetAC;
   std::function<TargetTransformInfo &(Function &)> GetTTI;
   std::function<TargetLibraryInfo &(Function &)> GetTLI;
+  std::function<FuncSpecCostInfo &(Function &)> GetFSCI;
 
   SmallPtrSet<Function *, 2> SpecializedFuncs;
 
@@ -221,8 +218,10 @@ public:
   FunctionSpecializer(SCCPSolver &Solver,
                       std::function<AssumptionCache &(Function &)> GetAC,
                       std::function<TargetTransformInfo &(Function &)> GetTTI,
-                      std::function<TargetLibraryInfo &(Function &)> GetTLI)
-      : Solver(Solver), GetAC(GetAC), GetTTI(GetTTI), GetTLI(GetTLI) {}
+                      std::function<TargetLibraryInfo &(Function &)> GetTLI,
+                      std::function<FuncSpecCostInfo &(Function &)> GetFSCI)
+      : Solver(Solver), GetAC(GetAC), GetTTI(GetTTI), GetTLI(GetTLI),
+        GetFSCI(GetFSCI) {}
 
   /// Attempt to specialize functions in the module to enable constant
   /// propagation across function boundaries.
@@ -400,123 +399,16 @@ private:
 
   /// Compute the cost of specializing function \p F.
   InstructionCost getSpecializationCost(Function *F) {
-    // Compute the code metrics for the function.
-    SmallPtrSet<const Value *, 32> EphValues;
-    CodeMetrics::collectEphemeralValues(F, &(GetAC)(*F), EphValues);
-    CodeMetrics Metrics;
-    for (BasicBlock &BB : *F)
-      Metrics.analyzeBasicBlock(&BB, (GetTTI)(*F), EphValues);
-
-    // If the code metrics reveal that we shouldn't duplicate the function, we
-    // shouldn't specialize it. Set the specialization cost to Invalid.
-    if (Metrics.notDuplicatable) {
-      InstructionCost C{};
-      C.setInvalid();
-      return C;
-    }
-
-    // Otherwise, set the specialization cost to be the cost of all the
-    // instructions in the function and penalty for specializing more functions.
-    unsigned Penalty = NbFunctionsSpecialized + 1;
-    return Metrics.NumInsts * InlineConstants::InstrCost * Penalty;
-  }
-
-  InstructionCost getUserBonus(User *U, llvm::TargetTransformInfo &TTI,
-                               LoopInfo &LI) {
-    auto *I = dyn_cast_or_null<Instruction>(U);
-    // If not an instruction we do not know how to evaluate.
-    // Keep minimum possible cost for now so that it doesnt affect
-    // specialization.
-    if (!I)
-      return std::numeric_limits<unsigned>::min();
-
-    auto Cost = TTI.getUserCost(U, TargetTransformInfo::TCK_SizeAndLatency);
-
-    // Traverse recursively if there are more uses.
-    // TODO: Any other instructions to be added here?
-    if (I->mayReadFromMemory() || I->isCast())
-      for (auto *User : I->users())
-        Cost += getUserBonus(User, TTI, LI);
-
-    // Increase the cost if it is inside the loop.
-    auto LoopDepth = LI.getLoopDepth(I->getParent());
-    Cost *= std::pow((double)AvgLoopIterationCount, LoopDepth);
-    return Cost;
+    FuncSpecCostInfo &FSCI = GetFSCI(*F);
+    // Penalty for specializing more functions.
+    unsigned Penalty = (NumFuncSpecialized + 1);
+    return FSCI.getCost() * Penalty;
   }
 
   /// Compute a bonus for replacing argument \p A with constant \p C.
   InstructionCost getSpecializationBonus(Argument *A, Constant *C) {
-    Function *F = A->getParent();
-    DominatorTree DT(*F);
-    LoopInfo LI(DT);
-    auto &TTI = (GetTTI)(*F);
-    LLVM_DEBUG(dbgs() << "FnSpecialization: Analysing bonus for: " << *A
-                      << "\n");
-
-    InstructionCost TotalCost = 0;
-    for (auto *U : A->users()) {
-      TotalCost += getUserBonus(U, TTI, LI);
-      LLVM_DEBUG(dbgs() << "FnSpecialization: User cost ";
-                 TotalCost.print(dbgs()); dbgs() << " for: " << *U << "\n");
-    }
-
-    // The below heuristic is only concerned with exposing inlining
-    // opportunities via indirect call promotion. If the argument is not a
-    // function pointer, give up.
-    if (!isa<PointerType>(A->getType()) ||
-        !isa<FunctionType>(A->getType()->getPointerElementType()))
-      return TotalCost;
-
-    // Since the argument is a function pointer, its incoming constant values
-    // should be functions or constant expressions. The code below attempts to
-    // look through cast expressions to find the function that will be called.
-    Value *CalledValue = C;
-    while (isa<ConstantExpr>(CalledValue) &&
-           cast<ConstantExpr>(CalledValue)->isCast())
-      CalledValue = cast<User>(CalledValue)->getOperand(0);
-    Function *CalledFunction = dyn_cast<Function>(CalledValue);
-    if (!CalledFunction)
-      return TotalCost;
-
-    // Get TTI for the called function (used for the inline cost).
-    auto &CalleeTTI = (GetTTI)(*CalledFunction);
-
-    // Look at all the call sites whose called value is the argument.
-    // Specializing the function on the argument would allow these indirect
-    // calls to be promoted to direct calls. If the indirect call promotion
-    // would likely enable the called function to be inlined, specializing is a
-    // good idea.
-    int Bonus = 0;
-    for (User *U : A->users()) {
-      if (!isa<CallInst>(U) && !isa<InvokeInst>(U))
-        continue;
-      auto *CS = cast<CallBase>(U);
-      if (CS->getCalledOperand() != A)
-        continue;
-
-      // Get the cost of inlining the called function at this call site. Note
-      // that this is only an estimate. The called function may eventually
-      // change in a way that leads to it not being inlined here, even though
-      // inlining looks profitable now. For example, one of its called
-      // functions may be inlined into it, making the called function too large
-      // to be inlined into this call site.
-      //
-      // We apply a boost for performing indirect call promotion by increasing
-      // the default threshold by the threshold for indirect calls.
-      auto Params = getInlineParams();
-      Params.DefaultThreshold += InlineConstants::IndirectCallThreshold;
-      InlineCost IC =
-          getInlineCost(*CS, CalledFunction, Params, CalleeTTI, GetAC, GetTLI);
-
-      // We clamp the bonus for this call to be between zero and the default
-      // threshold.
-      if (IC.isAlways())
-        Bonus += Params.DefaultThreshold;
-      else if (IC.isVariable() && IC.getCostDelta() > 0)
-        Bonus += IC.getCostDelta();
-    }
-
-    return TotalCost + Bonus;
+    FuncSpecCostInfo &FSCI = GetFSCI(*A->getParent());
+    return FSCI.getBonus(A, C, GetTTI, GetAC, GetTLI);
   }
 
   /// Determine if we should specialize a function based on the incoming values
@@ -689,9 +581,10 @@ bool llvm::runFunctionSpecialization(
     std::function<TargetLibraryInfo &(Function &)> GetTLI,
     std::function<TargetTransformInfo &(Function &)> GetTTI,
     std::function<AssumptionCache &(Function &)> GetAC,
+    std::function<FuncSpecCostInfo &(Function &)> GetFSCI,
     function_ref<AnalysisResultsForFn(Function &)> GetAnalysis) {
   SCCPSolver Solver(DL, GetTLI, M.getContext());
-  FunctionSpecializer FS(Solver, GetAC, GetTTI, GetTLI);
+  FunctionSpecializer FS(Solver, GetAC, GetTTI, GetTLI, GetFSCI);
   bool Changed = false;
 
   // Loop over all functions, marking arguments to those with their addresses

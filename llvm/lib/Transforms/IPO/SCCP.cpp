@@ -12,6 +12,7 @@
 
 #include "llvm/Transforms/IPO/SCCP.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/FuncSpecCost.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
@@ -118,6 +119,9 @@ PreservedAnalyses FunctionSpecializationPass::run(Module &M,
   auto GetAC = [&FAM](Function &F) -> AssumptionCache & {
     return FAM.getResult<AssumptionAnalysis>(F);
   };
+  auto GetFSCI = [&FAM](Function &F) -> FuncSpecCostInfo & {
+    return FAM.getResult<FunctionSpecializationAnalysis>(F);
+  };
   auto GetAnalysis = [&FAM](Function &F) -> AnalysisResultsForFn {
     DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(F);
     return {std::make_unique<PredicateInfo>(
@@ -125,7 +129,8 @@ PreservedAnalyses FunctionSpecializationPass::run(Module &M,
             &DT, FAM.getCachedResult<PostDominatorTreeAnalysis>(F)};
   };
 
-  if (!runFunctionSpecialization(M, DL, GetTLI, GetTTI, GetAC, GetAnalysis))
+  if (!runFunctionSpecialization(M, DL, GetTLI, GetTTI, GetAC, GetFSCI,
+                                 GetAnalysis))
     return PreservedAnalyses::all();
 
   PreservedAnalyses PA;
@@ -144,6 +149,7 @@ struct FunctionSpecializationLegacyPass : public ModulePass {
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<TargetLibraryInfoWrapperPass>();
     AU.addRequired<TargetTransformInfoWrapperPass>();
+    AU.addRequired<FunctionSpecializationWrapperPass>();
   }
 
   virtual bool runOnModule(Module &M) override {
@@ -160,6 +166,10 @@ struct FunctionSpecializationLegacyPass : public ModulePass {
     auto GetAC = [this](Function &F) -> AssumptionCache & {
       return this->getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
     };
+    auto GetFSCI = [this](Function &F) -> FuncSpecCostInfo & {
+      return this->getAnalysis<FunctionSpecializationWrapperPass>(F)
+          .getFuncSpecCost();
+    };
 
     auto GetAnalysis = [this](Function &F) -> AnalysisResultsForFn {
       DominatorTree &DT =
@@ -172,7 +182,8 @@ struct FunctionSpecializationLegacyPass : public ModulePass {
           nullptr,  // We cannot preserve the DT or PDT with the legacy pass
           nullptr}; // manager, so set them to nullptr.
     };
-    return runFunctionSpecialization(M, DL, GetTLI, GetTTI, GetAC, GetAnalysis);
+    return runFunctionSpecialization(M, DL, GetTLI, GetTTI, GetAC, GetFSCI,
+                                     GetAnalysis);
   }
 };
 

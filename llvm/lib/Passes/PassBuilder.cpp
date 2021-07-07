@@ -34,6 +34,7 @@
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/DivergenceAnalysis.h"
 #include "llvm/Analysis/DominanceFrontier.h"
+#include "llvm/Analysis/FuncSpecCost.h"
 #include "llvm/Analysis/FunctionPropertiesAnalysis.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/IRSimilarityIdentifier.h"
