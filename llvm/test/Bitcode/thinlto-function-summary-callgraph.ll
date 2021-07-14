@@ -35,7 +35,7 @@
 ; COMBINED-NEXT:    <VALUE_GUID
 ; COMBINED-NEXT:    <COMBINED
 ; See if the call to func is registered.
-; COMBINED-NEXT:    <COMBINED {{.*}} op9=[[FUNCID]]/>
+; COMBINED-NEXT:    <COMBINED {{.*}} op11=[[FUNCID]] op12=0/>
 ; COMBINED-NEXT:    <BLOCK_COUNT op0=2/>
 ; COMBINED-NEXT:  </GLOBALVAL_SUMMARY_BLOCK>
 

@@ -28,6 +28,20 @@ using namespace llvm;
 
 #define DEBUG_TYPE "func-spec-cost"
 
+/// Limit on instruction count of imported functions.
+/// The function whose number of instruction below this argument
+/// is considered to be inlined during function importing.
+static cl::opt<unsigned> PotentialInlingLimit(
+    "funcspec-potential-inlininglimit", cl::init(100), cl::Hidden,
+    cl::value_desc("N"),
+    cl::desc("Only functions with less than N instructions are considered to "
+             "be inlined during analysis of func spec."));
+
+static cl::opt<double>
+    BonusFactorFromInlining("func-spec-bonus-from-inlining-factor", cl::Hidden,
+                            cl::desc("Factor for bonus from potetial inling."),
+                            cl::init(10));
+
 static cl::opt<unsigned>
     AvgLoopIterationCount("func-specialization-avg-iters-cost", cl::Hidden,
                           cl::desc("Average loop iteration count cost"),
@@ -220,4 +234,38 @@ bool FunctionSpecializationWrapperPass::runOnFunction(Function &F) {
 
 StringRef FunctionSpecializationWrapperPass::getPassName() const {
   return "Function Specialization Cost Analysis";
+}
+
+unsigned ArgUsage::ConstantMarker = ~(unsigned)0;
+
+ArgUsage::ArgUsage(const CallBase &CB) {
+  for (auto &U : CB.args()) {
+    Function *F = getFunction(U.get());
+    LinesOfArgs.push_back({CB.getArgOperandNo(&U), ConstantMarker});
+    if (!F)
+      continue;
+
+    LinesOfArgs.push_back({CB.getArgOperandNo(&U), F->getInstructionCount()});
+  }
+}
+
+bool FuncSpecCostInfo::shouldImport(const ArgUsage &AU) const {
+  if (!Cost.isValid())
+    return false;
+  unsigned SpecCost = *Cost.getValue();
+  /// FIXME: It would consider the first argument who fits
+  /// the condition. It should be fixed after Function Specialization
+  /// pass fix this.
+  for (auto &IndexValuePair : AU.LinesOfArgs) {
+    unsigned Index = IndexValuePair.first;
+    unsigned Value = IndexValuePair.second;
+    unsigned BonusBase = getBonusBase(Index);
+    // Should we consider attributes like `noinline` and `always_inline` here?
+    if (!ArgUsage::isConstant(Value) && Value < PotentialInlingLimit)
+      BonusBase += BonusFactorFromInlining * (PotentialInlingLimit - Value);
+
+    if (BonusBase > SpecCost)
+      return true;
+  }
+  return false;
 }

@@ -143,6 +143,12 @@ static cl::opt<bool>
     ImportAllIndex("import-all-index",
                    cl::desc("Import all external functions in index."));
 
+static cl::opt<bool>
+    UseFuncSpecCostInfo("import-use-func-spec-info",
+                        cl::desc("Considering function specialization cost "
+                                 "infomation when importing functions.\n"),
+                        cl::Hidden, cl::init(true));
+
 // Load lazily a module from \p FileName in \p Context.
 static std::unique_ptr<Module> loadFile(const std::string &FileName,
                                         LLVMContext &Context) {
@@ -171,12 +177,11 @@ static std::unique_ptr<Module> loadFile(const std::string &FileName,
 ///   number of source modules parsed/linked.
 /// - One that has PGO data attached.
 /// - [insert you fancy metric here]
-static const GlobalValueSummary *
-selectCallee(const ModuleSummaryIndex &Index,
-             ArrayRef<std::unique_ptr<GlobalValueSummary>> CalleeSummaryList,
-             unsigned Threshold, StringRef CallerModulePath,
-             FunctionImporter::ImportFailureReason &Reason,
-             GlobalValue::GUID GUID) {
+static const GlobalValueSummary *selectCallee(
+    const ModuleSummaryIndex &Index,
+    ArrayRef<std::unique_ptr<GlobalValueSummary>> CalleeSummaryList,
+    const CalleeInfo &CI, unsigned Threshold, StringRef CallerModulePath,
+    FunctionImporter::ImportFailureReason &Reason, GlobalValue::GUID GUID) {
   Reason = FunctionImporter::ImportFailureReason::None;
   auto It = llvm::find_if(
       CalleeSummaryList,
@@ -230,22 +235,32 @@ selectCallee(const ModuleSummaryIndex &Index,
           return false;
         }
 
-        if ((Summary->instCount() > Threshold) &&
-            !Summary->fflags().AlwaysInline && !ForceImportAll) {
-          Reason = FunctionImporter::ImportFailureReason::TooLarge;
-          return false;
-        }
+        Reason = [&](FunctionSummary *Summary) {
+          if ((Summary->instCount() > Threshold) &&
+              !Summary->fflags().AlwaysInline && !ForceImportAll)
+            return FunctionImporter::ImportFailureReason::TooLarge;
 
-        // Skip if it isn't legal to import (e.g. may reference unpromotable
-        // locals).
-        if (Summary->notEligibleToImport()) {
+          // Skip if it isn't legal to import (e.g. may reference unpromotable
+          // locals).
+          if (Summary->notEligibleToImport())
+            return FunctionImporter::ImportFailureReason::NotEligible;
+
+          // Don't bother importing if we can't inline it anyway.
+          if (Summary->fflags().NoInline && !ForceImportAll)
+            return FunctionImporter::ImportFailureReason::NoInline;
+
+          return FunctionImporter::ImportFailureReason::None;
+        }(Summary);
+
+        if (Reason == FunctionImporter::ImportFailureReason::None)
+          return true;
+
+        if (!UseFuncSpecCostInfo)
+          return false;
+
+        if (!Summary->shouldImport(CI)) {
+          /// FIXME: add new failure type.
           Reason = FunctionImporter::ImportFailureReason::NotEligible;
-          return false;
-        }
-
-        // Don't bother importing if we can't inline it anyway.
-        if (Summary->fflags().NoInline && !ForceImportAll) {
-          Reason = FunctionImporter::ImportFailureReason::NoInline;
           return false;
         }
 
@@ -469,8 +484,9 @@ static void computeImportForFunction(
       }
 
       FunctionImporter::ImportFailureReason Reason;
-      CalleeSummary = selectCallee(Index, VI.getSummaryList(), NewThreshold,
-                                   Summary.modulePath(), Reason, VI.getGUID());
+      CalleeSummary =
+          selectCallee(Index, VI.getSummaryList(), Edge.second, NewThreshold,
+                       Summary.modulePath(), Reason, VI.getGUID());
       if (!CalleeSummary) {
         // Update with new larger threshold if this was a retry (otherwise
         // we would have already inserted with NewThreshold above). Also
@@ -511,6 +527,7 @@ static void computeImportForFunction(
       CalleeSummary = CalleeSummary->getBaseObject();
       ResolvedCalleeSummary = cast<FunctionSummary>(CalleeSummary);
 
+      /// FIXME: add cheap condition for assert function specialization.
       assert((ResolvedCalleeSummary->fflags().AlwaysInline || ForceImportAll ||
               (ResolvedCalleeSummary->instCount() <= NewThreshold)) &&
              "selectCallee() didn't honor the threshold");

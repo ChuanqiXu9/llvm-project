@@ -792,10 +792,14 @@ private:
       uint64_t Offset,
       DenseMap<unsigned, GlobalValue::LinkageTypes> &ValueIdToLinkageMap);
   std::vector<ValueInfo> makeRefList(ArrayRef<uint64_t> Record);
+  FuncSpecCostInfo makeSpecCostInfo(ArrayRef<uint64_t> Record,
+                                    unsigned SpecCost);
   std::vector<FunctionSummary::EdgeTy> makeCallList(ArrayRef<uint64_t> Record,
+                                                    uint64_t Version,
                                                     bool IsOldProfileFormat,
                                                     bool HasProfile,
                                                     bool HasRelBF);
+  ArgUsage makeArgUsages(ArrayRef<uint64_t> Record, unsigned &I);
   Error parseEntireSummary(unsigned ID);
   Error parseModuleStringTable();
   void parseTypeIdCompatibleVtableSummaryRecord(ArrayRef<uint64_t> Record);
@@ -5935,8 +5939,33 @@ ModuleSummaryIndexBitcodeReader::makeRefList(ArrayRef<uint64_t> Record) {
   return Ret;
 }
 
+FuncSpecCostInfo
+ModuleSummaryIndexBitcodeReader::makeSpecCostInfo(ArrayRef<uint64_t> Record,
+                                                  unsigned SpecCost) {
+  MapVector<unsigned, unsigned> BonusBaseMap;
+  auto size = Record.size();
+  assert(size % 2 == 0 && "The size of base bonus should be even!");
+  for (unsigned i = 0; i < size; i += 2)
+    BonusBaseMap.insert({Record[i], Record[i + 1]});
+  return FuncSpecCostInfo(SpecCost, std::move(BonusBaseMap));
+}
+
+ArgUsage
+ModuleSummaryIndexBitcodeReader::makeArgUsages(ArrayRef<uint64_t> Record,
+                                               unsigned &I) {
+  SmallVector<std::pair<unsigned, unsigned>, 4> Uses;
+  size_t Size = Record[I++];
+  assert(Size % 2 == 0);
+  assert(I + Size <= Record.size());
+  Size += I;
+  for (; I != Size; I += 2)
+    Uses.push_back({Record[I], Record[I + 1]});
+  return ArgUsage(std::move(Uses));
+}
+
 std::vector<FunctionSummary::EdgeTy>
 ModuleSummaryIndexBitcodeReader::makeCallList(ArrayRef<uint64_t> Record,
+                                              uint64_t Version,
                                               bool IsOldProfileFormat,
                                               bool HasProfile, bool HasRelBF) {
   std::vector<FunctionSummary::EdgeTy> Ret;
@@ -5945,6 +5974,11 @@ ModuleSummaryIndexBitcodeReader::makeCallList(ArrayRef<uint64_t> Record,
     CalleeInfo::HotnessType Hotness = CalleeInfo::HotnessType::Unknown;
     uint64_t RelBF = 0;
     ValueInfo Callee = getValueInfoFromValueId(Record[I]).first;
+    ArgUsage Uses;
+    if (Version >= 10) {
+      Uses = makeArgUsages(Record, ++I);
+      I -= 1; // Match original order.
+    }
     if (IsOldProfileFormat) {
       I += 1; // Skip old callsitecount field
       if (HasProfile)
@@ -5953,7 +5987,8 @@ ModuleSummaryIndexBitcodeReader::makeCallList(ArrayRef<uint64_t> Record,
       Hotness = static_cast<CalleeInfo::HotnessType>(Record[++I]);
     else if (HasRelBF)
       RelBF = Record[++I];
-    Ret.push_back(FunctionSummary::EdgeTy{Callee, CalleeInfo(Hotness, RelBF)});
+    Ret.push_back(FunctionSummary::EdgeTy{
+        Callee, CalleeInfo(Hotness, RelBF, std::move(Uses))});
   }
   return Ret;
 }
@@ -6182,6 +6217,8 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
       unsigned NumRefs = Record[3];
       unsigned NumRORefs = 0, NumWORefs = 0;
       int RefListStartIndex = 4;
+      unsigned SpecCost = ~(unsigned)0;
+      unsigned NumBaseBonus = 0;
       if (Version >= 4) {
         RawFunFlags = Record[3];
         NumRefs = Record[4];
@@ -6192,6 +6229,11 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
           if (Version >= 7) {
             NumWORefs = Record[6];
             RefListStartIndex = 7;
+            if (Version >= 10) {
+              SpecCost = Record[7];
+              NumBaseBonus = Record[8];
+              RefListStartIndex = 9;
+            }
           }
         }
       }
@@ -6202,16 +6244,20 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
       // string table section in the per-module index, we create a single
       // module path string table entry with an empty (0) ID to take
       // ownership.
-      int CallGraphEdgeStartIndex = RefListStartIndex + NumRefs;
-      assert(Record.size() >= RefListStartIndex + NumRefs &&
+      unsigned FuncSpecStartIndex = RefListStartIndex + NumRefs;
+      unsigned CallGraphEdgeStartIndex = FuncSpecStartIndex + NumBaseBonus;
+      assert(Record.size() >= CallGraphEdgeStartIndex &&
              "Record size inconsistent with number of references");
       std::vector<ValueInfo> Refs = makeRefList(
           ArrayRef<uint64_t>(Record).slice(RefListStartIndex, NumRefs));
+      FuncSpecCostInfo FSCI = makeSpecCostInfo(
+          ArrayRef<uint64_t>(Record).slice(FuncSpecStartIndex, NumBaseBonus),
+          SpecCost);
       bool HasProfile = (BitCode == bitc::FS_PERMODULE_PROFILE);
       bool HasRelBF = (BitCode == bitc::FS_PERMODULE_RELBF);
       std::vector<FunctionSummary::EdgeTy> Calls = makeCallList(
           ArrayRef<uint64_t>(Record).slice(CallGraphEdgeStartIndex),
-          IsOldProfileFormat, HasProfile, HasRelBF);
+          Version, IsOldProfileFormat, HasProfile, HasRelBF);
       setSpecialRefs(Refs, NumRORefs, NumWORefs);
       auto FS = std::make_unique<FunctionSummary>(
           Flags, InstCount, getDecodedFFlags(RawFunFlags), /*EntryCount=*/0,
@@ -6220,7 +6266,7 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
           std::move(PendingTypeCheckedLoadVCalls),
           std::move(PendingTypeTestAssumeConstVCalls),
           std::move(PendingTypeCheckedLoadConstVCalls),
-          std::move(PendingParamAccesses));
+          std::move(PendingParamAccesses), std::move(FSCI));
       auto VIAndOriginalGUID = getValueInfoFromValueId(ValueID);
       FS->setModulePath(getThisModule()->first());
       FS->setOriginalName(VIAndOriginalGUID.second);
@@ -6321,6 +6367,8 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
       unsigned NumRefs = Record[4];
       unsigned NumRORefs = 0, NumWORefs = 0;
       int RefListStartIndex = 5;
+      unsigned SpecCost = ~(unsigned)0;
+      unsigned NumBaseBonus = 0;
 
       if (Version >= 4) {
         RawFunFlags = Record[4];
@@ -6337,6 +6385,13 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
               RefListStartIndex = 9;
               NumWORefs = Record[8];
               NumRORefsOffset = 2;
+
+              if (Version >= 10) {
+                SpecCost = Record[9];
+                NumBaseBonus = Record[10];
+                RefListStartIndex = 11;
+                NumRORefsOffset = 4;
+              }
             }
           }
           NumRORefs = Record[RefListStartIndex - NumRORefsOffset];
@@ -6345,15 +6400,20 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
       }
 
       auto Flags = getDecodedGVSummaryFlags(RawFlags, Version);
-      int CallGraphEdgeStartIndex = RefListStartIndex + NumRefs;
-      assert(Record.size() >= RefListStartIndex + NumRefs &&
+
+      uint64_t FuncSpecStartIndex = RefListStartIndex + NumRefs;
+      uint64_t CallGraphEdgeStartIndex = FuncSpecStartIndex + NumBaseBonus;
+      assert(Record.size() >= CallGraphEdgeStartIndex &&
              "Record size inconsistent with number of references");
       std::vector<ValueInfo> Refs = makeRefList(
           ArrayRef<uint64_t>(Record).slice(RefListStartIndex, NumRefs));
+      FuncSpecCostInfo FSCI = makeSpecCostInfo(
+          ArrayRef<uint64_t>(Record).slice(FuncSpecStartIndex, NumBaseBonus),
+          SpecCost);
       bool HasProfile = (BitCode == bitc::FS_COMBINED_PROFILE);
       std::vector<FunctionSummary::EdgeTy> Edges = makeCallList(
           ArrayRef<uint64_t>(Record).slice(CallGraphEdgeStartIndex),
-          IsOldProfileFormat, HasProfile, false);
+          Version, IsOldProfileFormat, HasProfile, false);
       ValueInfo VI = getValueInfoFromValueId(ValueID).first;
       setSpecialRefs(Refs, NumRORefs, NumWORefs);
       auto FS = std::make_unique<FunctionSummary>(
@@ -6363,7 +6423,7 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
           std::move(PendingTypeCheckedLoadVCalls),
           std::move(PendingTypeTestAssumeConstVCalls),
           std::move(PendingTypeCheckedLoadConstVCalls),
-          std::move(PendingParamAccesses));
+          std::move(PendingParamAccesses), std::move(FSCI));
       LastSeenSummary = FS.get();
       LastSeenGUID = VI.getGUID();
       FS->setModulePath(ModuleIdMap[ModuleId]);

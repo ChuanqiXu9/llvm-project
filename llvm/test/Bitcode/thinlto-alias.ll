@@ -21,7 +21,7 @@
 ; CHECK-NEXT:    <FLAGS
 ; See if the call to func is registered.
 ; The value id 1 matches the second FUNCTION record above.
-; CHECK-NEXT:    <PERMODULE {{.*}} op7=1/>
+; CHECK-NEXT:    <PERMODULE {{.*}} op9=1 op10=0/>
 ; CHECK-NEXT:    <BLOCK_COUNT op0=1/>
 ; CHECK-NEXT:  </GLOBALVAL_SUMMARY_BLOCK>
 
@@ -35,7 +35,7 @@
 ; COMBINED-NEXT:    <VALUE_GUID op0=[[ALIASID:[0-9]+]] op1=-5751648690987223394/>
 ; COMBINED-NEXT:    <VALUE_GUID
 ; COMBINED-NEXT:    <VALUE_GUID op0=[[ALIASEEID:[0-9]+]] op1=-1039159065113703048/>
-; COMBINED-NEXT:    <COMBINED {{.*}} op9=[[ALIASID]]/>
+; COMBINED-NEXT:    <COMBINED {{.*}} op11=[[ALIASID]] op12=0/>
 ; COMBINED-NEXT:    <COMBINED {{.*}}
 ; COMBINED-NEXT:    <COMBINED_ALIAS  {{.*}} op3=[[ALIASEEID]]
 ; COMBINED-NEXT:    <BLOCK_COUNT op0=2/>

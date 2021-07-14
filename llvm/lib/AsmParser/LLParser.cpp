@@ -8409,7 +8409,9 @@ bool LLParser::parseFunctionSummary(std::string Name, GlobalValue::GUID GUID,
       std::move(TypeIdInfo.TypeCheckedLoadVCalls),
       std::move(TypeIdInfo.TypeTestAssumeConstVCalls),
       std::move(TypeIdInfo.TypeCheckedLoadConstVCalls),
-      std::move(ParamAccesses));
+      std::move(ParamAccesses),
+      /// FIXME: Implement actually parser for FuncSpecCostInfo.
+      FuncSpecCostInfo());
 
   FS->setModulePath(ModulePath);
 
@@ -8646,7 +8648,10 @@ bool LLParser::parseOptionalCalls(std::vector<FunctionSummary::EdgeTy> &Calls) {
     // can only do so once the std::vector is finalized.
     if (VI.getRef() == FwdVIRef)
       IdToIndexMap[GVId].push_back(std::make_pair(Calls.size(), Loc));
-    Calls.push_back(FunctionSummary::EdgeTy{VI, CalleeInfo(Hotness, RelBF)});
+
+    /// FIXME: Implement parser for new added infomation.
+    Calls.push_back(
+        FunctionSummary::EdgeTy{VI, CalleeInfo(Hotness, RelBF, ArgUsage())});
 
     if (parseToken(lltok::rparen, "expected ')' in call"))
       return true;

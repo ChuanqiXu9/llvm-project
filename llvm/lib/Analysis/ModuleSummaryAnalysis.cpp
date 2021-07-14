@@ -239,7 +239,8 @@ static void computeFunctionSummary(
     BlockFrequencyInfo *BFI, ProfileSummaryInfo *PSI, DominatorTree &DT,
     bool HasLocalsInUsedOrAsm, DenseSet<GlobalValue::GUID> &CantBePromoted,
     bool IsThinLTO,
-    std::function<const StackSafetyInfo *(const Function &F)> GetSSICallback) {
+    std::function<const StackSafetyInfo *(const Function &F)> GetSSICallback,
+    std::function<FuncSpecCostInfo *(const Function &F)> GetFSCICallback) {
   // Summary not currently supported for anonymous functions, they should
   // have been named.
   assert(F.hasName());
@@ -369,6 +370,8 @@ static void computeFunctionSummary(
           uint64_t EntryFreq = BFI->getEntryFreq();
           ValueInfo.updateRelBlockFreq(BBFreq, EntryFreq);
         }
+
+        ValueInfo.updateUsages(ArgUsage(*CB));
       } else {
         // Skip inline assembly calls.
         if (CI && CI->isInlineAsm())
@@ -484,12 +487,16 @@ static void computeFunctionSummary(
   std::vector<FunctionSummary::ParamAccess> ParamAccesses;
   if (auto *SSI = GetSSICallback(F))
     ParamAccesses = SSI->getParamAccesses(Index);
+  FuncSpecCostInfo *FSCI = nullptr;
+  if (GetFSCICallback)
+    FSCI = GetFSCICallback(F);
   auto FuncSummary = std::make_unique<FunctionSummary>(
       Flags, NumInsts, FunFlags, /*EntryCount=*/0, std::move(Refs),
       CallGraphEdges.takeVector(), TypeTests.takeVector(),
       TypeTestAssumeVCalls.takeVector(), TypeCheckedLoadVCalls.takeVector(),
       TypeTestAssumeConstVCalls.takeVector(),
-      TypeCheckedLoadConstVCalls.takeVector(), std::move(ParamAccesses));
+      TypeCheckedLoadConstVCalls.takeVector(), std::move(ParamAccesses),
+      FSCI ? std::move(*FSCI) : FuncSpecCostInfo());
   if (NonRenamableLocal)
     CantBePromoted.insert(F.getGUID());
   Index.addGlobalValueSummary(F, std::move(FuncSummary));
@@ -658,6 +665,7 @@ static void setLiveRoot(ModuleSummaryIndex &Index, StringRef Name) {
 ModuleSummaryIndex llvm::buildModuleSummaryIndex(
     const Module &M,
     std::function<BlockFrequencyInfo *(const Function &F)> GetBFICallback,
+    std::function<FuncSpecCostInfo *(const Function &F)> GetFSCICallback,
     ProfileSummaryInfo *PSI,
     std::function<const StackSafetyInfo *(const Function &F)> GetSSICallback) {
   assert(PSI);
@@ -734,7 +742,8 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
                     ArrayRef<FunctionSummary::VFuncId>{},
                     ArrayRef<FunctionSummary::ConstVCall>{},
                     ArrayRef<FunctionSummary::ConstVCall>{},
-                    ArrayRef<FunctionSummary::ParamAccess>{});
+                    ArrayRef<FunctionSummary::ParamAccess>{},
+                    FuncSpecCostInfo());
             Index.addGlobalValueSummary(*GV, std::move(Summary));
           } else {
             std::unique_ptr<GlobalVarSummary> Summary =
@@ -774,7 +783,7 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
 
     computeFunctionSummary(Index, M, F, BFI, PSI, DT,
                            !LocalsUsed.empty() || HasLocalInlineAsmSymbol,
-                           CantBePromoted, IsThinLTO, GetSSICallback);
+                           CantBePromoted, IsThinLTO, GetSSICallback, GetFSCICallback);
   }
 
   // Compute summaries for all variables defined in module, and save in the
@@ -863,6 +872,10 @@ ModuleSummaryIndexAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
         return &FAM.getResult<BlockFrequencyAnalysis>(
             *const_cast<Function *>(&F));
       },
+      [&FAM](const Function &F) {
+        return &FAM.getResult<FunctionSpecializationAnalysis>(
+            *const_cast<Function *>(&F));
+      },
       &PSI,
       [&FAM, NeedSSI](const Function &F) -> const StackSafetyInfo * {
         return NeedSSI ? &FAM.getResult<StackSafetyAnalysis>(
@@ -878,6 +891,7 @@ INITIALIZE_PASS_BEGIN(ModuleSummaryIndexWrapperPass, "module-summary-analysis",
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ProfileSummaryInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(StackSafetyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(FunctionSpecializationWrapperPass)
 INITIALIZE_PASS_END(ModuleSummaryIndexWrapperPass, "module-summary-analysis",
                     "Module Summary Analysis", false, true)
 
@@ -900,6 +914,11 @@ bool ModuleSummaryIndexWrapperPass::runOnModule(Module &M) {
                          *const_cast<Function *>(&F))
                      .getBFI());
       },
+      [&](const Function &F) {
+        return &(this->getAnalysis<FunctionSpecializationWrapperPass>(
+                         *const_cast<Function *>(&F))
+                     .getFuncSpecCost());
+      },
       PSI,
       [&](const Function &F) -> const StackSafetyInfo * {
         return NeedSSI ? &getAnalysis<StackSafetyInfoWrapperPass>(
@@ -920,6 +939,7 @@ void ModuleSummaryIndexWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<BlockFrequencyInfoWrapperPass>();
   AU.addRequired<ProfileSummaryInfoWrapperPass>();
   AU.addRequired<StackSafetyInfoWrapperPass>();
+  AU.addRequired<FunctionSpecializationWrapperPass>();
 }
 
 char ImmutableModuleSummaryIndexWrapperPass::ID = 0;

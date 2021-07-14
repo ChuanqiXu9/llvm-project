@@ -17,6 +17,7 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Argument.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
@@ -27,6 +28,7 @@ namespace llvm {
 class AssumptionCache;
 class TargetTransformInfo;
 class TargetLibraryInfo;
+class ArgUsage;
 
 /// Cost/Bonus information for specialize a function with
 /// each argument.
@@ -47,6 +49,20 @@ public:
            function_ref<TargetTransformInfo &(Function &)> GetTTI,
            function_ref<AssumptionCache &(Function &)> GetAC,
            function_ref<const TargetLibraryInfo &(Function &)> GetTLI) const;
+
+  /// Given an ArgUsage, estimating if we should import corresponding function.
+  /// We should **only** call this when importing.
+  ///
+  /// If there is one argument marks function, we would think it would be
+  /// inlined if its lines of codes is less than a specific threshold.
+  ///
+  /// TOOD: Add profiling infomation.
+  bool shouldImport(const ArgUsage &) const;
+
+  ArrayRef<std::pair<unsigned, unsigned>> getSpecBonusBaseMap() const {
+    return  makeArrayRef(&SpecBonusBaseMap.front(),
+                         SpecBonusBaseMap.size());
+  }
 
   FuncSpecCostInfo() {}
   FuncSpecCostInfo(FuncSpecCostInfo &&Other)
@@ -90,6 +106,51 @@ public:
   StringRef getPassName() const override;
 };
 
+/// Represent the usage of args at the callsite used in module summary.
+/// We should keep it as small as possible.
+///
+/// Now we mainly cares if the argument is a function. If yes, it implies
+/// a chance to hoist an indirect call to a direct call by function specialize
+/// pass.
+///
+/// It should be easy to add value infomation about the constantness or value
+/// range.
+class ArgUsage {
+private:
+  static unsigned ConstantMarker;
+  /// Map from ArgNo to the lines of codes if the corresponding argument refer
+  /// to a function. If the corresponding argument is a constant other than
+  /// function, we would set the value to ConstantMarker(0xffffffff).
+  ///
+  /// For example, the value of LinesOfArgs for following example:
+  /// ```
+  ///     foo(var, 1, bar); // bar is a function; var is a variable
+  /// ```
+  /// should be `[<1, 0xffffffff>, <2, lines of bar>]`.
+  SmallVector<std::pair<unsigned, unsigned>, 4> LinesOfArgs;
+
+  friend class FuncSpecCostInfo;
+  friend class CalleeInfo;
+
+public:
+  ArgUsage() {}
+  ArgUsage(const CallBase &);
+  ArgUsage(SmallVectorImpl<std::pair<unsigned, unsigned>> &&Uses)
+      : LinesOfArgs(std::move(Uses)) {}
+
+  ArgUsage(const ArgUsage &AU) : LinesOfArgs(AU.LinesOfArgs) {}
+  ArgUsage(ArgUsage &&AU) : LinesOfArgs(std::move(AU.LinesOfArgs)) {}
+  ArgUsage &operator=(ArgUsage &&AU) {
+    LinesOfArgs = std::move(AU.LinesOfArgs);
+    return *this;
+  }
+  ArgUsage &operator=(const ArgUsage &AU) {
+    LinesOfArgs = AU.LinesOfArgs;
+    return *this;
+  }
+
+  static bool isConstant(unsigned value) { return value == ConstantMarker; }
+};
 } // namespace llvm
 
 #endif

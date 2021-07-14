@@ -3211,6 +3211,9 @@ void AssemblyWriter::printFunctionSummary(const FunctionSummary *FS) {
     Out << ", alwaysInline: " << FFlags.AlwaysInline;
     Out << ")";
   }
+
+  /// FIXME: Add writer for new infomation added for function specialization.
+
   if (!FS->calls().empty()) {
     Out << ", calls: (";
     FieldSeparator IFS;

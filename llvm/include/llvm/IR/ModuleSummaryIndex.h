@@ -23,6 +23,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TinyPtrVector.h"
+#include "llvm/Analysis/FuncSpecCost.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Module.h"
@@ -70,13 +71,26 @@ struct CalleeInfo {
   /// The value stored in RelBlockFreq has to be interpreted as the digits of
   /// a scaled number with a scale of \p -ScaleShift.
   uint32_t RelBlockFreq : 29;
+  /// The infomation about how arguments are used at the callsite.
+  /// NOTE: This may enlarge the size of CalleeInfo.
+  ArgUsage Usages;
   static constexpr int32_t ScaleShift = 8;
   static constexpr uint64_t MaxRelBlockFreq = (1 << 29) - 1;
 
   CalleeInfo()
-      : Hotness(static_cast<uint32_t>(HotnessType::Unknown)), RelBlockFreq(0) {}
-  explicit CalleeInfo(HotnessType Hotness, uint64_t RelBF)
-      : Hotness(static_cast<uint32_t>(Hotness)), RelBlockFreq(RelBF) {}
+      : Hotness(static_cast<uint32_t>(HotnessType::Unknown)), RelBlockFreq(0),
+        Usages() {}
+  explicit CalleeInfo(HotnessType Hotness, uint64_t RelBF, ArgUsage &&Usages)
+      : Hotness(static_cast<uint32_t>(Hotness)), RelBlockFreq(RelBF),
+        Usages(std::move(Usages)) {}
+
+  void updateUsages(ArgUsage &&OtherUsages) { Usages = std::move(OtherUsages); }
+
+  size_t getUsagesSize() const { return Usages.LinesOfArgs.size(); }
+
+  ArrayRef<std::pair<unsigned, unsigned>> getUsages() const {
+    return makeArrayRef(Usages.LinesOfArgs.begin(), Usages.LinesOfArgs.end());
+  }
 
   void updateHotness(const HotnessType OtherHotness) {
     Hotness = std::max(Hotness, static_cast<uint32_t>(OtherHotness));
@@ -625,7 +639,8 @@ public:
         std::vector<FunctionSummary::VFuncId>(),
         std::vector<FunctionSummary::ConstVCall>(),
         std::vector<FunctionSummary::ConstVCall>(),
-        std::vector<FunctionSummary::ParamAccess>());
+        std::vector<FunctionSummary::ParamAccess>(),
+        FuncSpecCostInfo());
   }
 
   /// A dummy node to reference external functions that aren't in the index
@@ -653,6 +668,8 @@ private:
   using ParamAccessesTy = std::vector<ParamAccess>;
   std::unique_ptr<ParamAccessesTy> ParamAccesses;
 
+  FuncSpecCostInfo SpecCostInfo;
+
 public:
   FunctionSummary(GVFlags Flags, unsigned NumInsts, FFlags FunFlags,
                   uint64_t EntryCount, std::vector<ValueInfo> Refs,
@@ -662,10 +679,12 @@ public:
                   std::vector<VFuncId> TypeCheckedLoadVCalls,
                   std::vector<ConstVCall> TypeTestAssumeConstVCalls,
                   std::vector<ConstVCall> TypeCheckedLoadConstVCalls,
-                  std::vector<ParamAccess> Params)
+                  std::vector<ParamAccess> Params,
+                  FuncSpecCostInfo SpecCostInfo)
       : GlobalValueSummary(FunctionKind, Flags, std::move(Refs)),
         InstCount(NumInsts), FunFlags(FunFlags), EntryCount(EntryCount),
-        CallGraphEdgeList(std::move(CGEdges)) {
+        CallGraphEdgeList(std::move(CGEdges)),
+        SpecCostInfo(std::move(SpecCostInfo)) {
     if (!TypeTests.empty() || !TypeTestAssumeVCalls.empty() ||
         !TypeCheckedLoadVCalls.empty() || !TypeTestAssumeConstVCalls.empty() ||
         !TypeCheckedLoadConstVCalls.empty())
@@ -772,6 +791,21 @@ public:
   }
 
   const TypeIdInfo *getTypeIdInfo() const { return TIdInfo.get(); };
+
+  unsigned getSpecializeCost() const {
+    InstructionCost Cost = SpecCostInfo.getCost();
+    if (Cost.isValid())
+      return *Cost.getValue();
+    return std::numeric_limits<unsigned>::max();
+  }
+
+  ArrayRef<std::pair<unsigned, unsigned>> getSpecBonusBase() const {
+    return SpecCostInfo.getSpecBonusBaseMap();
+  }
+
+  bool shouldImport(const CalleeInfo &CI) const {
+    return SpecCostInfo.shouldImport(CI.Usages);
+  }
 
   friend struct GraphTraits<ValueInfo>;
 };
@@ -1121,7 +1155,9 @@ public:
   // in the way some record are interpreted, like flags for instance.
   // Note that incrementing this may require changes in both BitcodeReader.cpp
   // and BitcodeWriter.cpp.
-  static constexpr uint64_t BitcodeSummaryVersion = 9;
+  // ChangeLog: 9->10. Add ArgUsage in CalleeInfo and SpecCostInfo in 
+  // Function Summary.
+  static constexpr uint64_t BitcodeSummaryVersion = 10;
 
   // Regular LTO module name for ASM writer
   static constexpr const char *getRegularLTOModuleName() {

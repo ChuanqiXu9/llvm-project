@@ -542,7 +542,7 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
     {
       raw_svector_ostream OS(OutputBuffer);
       ProfileSummaryInfo PSI(TheModule);
-      auto Index = buildModuleSummaryIndex(TheModule, nullptr, &PSI);
+      auto Index = buildModuleSummaryIndex(TheModule, nullptr, nullptr, &PSI);
       WriteBitcodeToFile(TheModule, OS, true, &Index);
     }
     return std::make_unique<SmallVectorMemoryBuffer>(std::move(OutputBuffer));

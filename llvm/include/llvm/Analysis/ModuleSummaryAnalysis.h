@@ -36,6 +36,7 @@ class StackSafetyInfo;
 ModuleSummaryIndex buildModuleSummaryIndex(
     const Module &M,
     std::function<BlockFrequencyInfo *(const Function &F)> GetBFICallback,
+    std::function<FuncSpecCostInfo *(const Function &F)> GetFSCICallback,
     ProfileSummaryInfo *PSI,
     std::function<const StackSafetyInfo *(const Function &F)> GetSSICallback =
         [](const Function &F) -> const StackSafetyInfo * { return nullptr; });

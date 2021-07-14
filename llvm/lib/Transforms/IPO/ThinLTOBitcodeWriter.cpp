@@ -252,7 +252,8 @@ void splitAndWriteThinLTOBitcode(
     // regular LTO module with an index for summary-based dead stripping.
     ProfileSummaryInfo PSI(M);
     M.addModuleFlag(Module::Error, "ThinLTO", uint32_t(0));
-    ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI);
+    ModuleSummaryIndex Index =
+        buildModuleSummaryIndex(M, nullptr, nullptr, &PSI);
     WriteBitcodeToFile(M, OS, /*ShouldPreserveUseListOrder=*/false, &Index);
 
     if (ThinLinkOS)
@@ -439,13 +440,13 @@ void splitAndWriteThinLTOBitcode(
 
   // FIXME: Try to re-use BSI and PFI from the original module here.
   ProfileSummaryInfo PSI(M);
-  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI);
+  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, nullptr, &PSI);
 
   // Mark the merged module as requiring full LTO. We still want an index for
   // it though, so that it can participate in summary-based dead stripping.
   MergedM->addModuleFlag(Module::Error, "ThinLTO", uint32_t(0));
   ModuleSummaryIndex MergedMIndex =
-      buildModuleSummaryIndex(*MergedM, nullptr, &PSI);
+      buildModuleSummaryIndex(*MergedM, nullptr, nullptr, &PSI);
 
   SmallVector<char, 0> Buffer;
 
@@ -518,7 +519,7 @@ void writeThinLTOBitcode(raw_ostream &OS, raw_ostream *ThinLinkOS,
       // buildModuleSummaryIndex when Module(s) are ready.
       ProfileSummaryInfo PSI(M);
       NewIndex = std::make_unique<ModuleSummaryIndex>(
-          buildModuleSummaryIndex(M, nullptr, &PSI));
+          buildModuleSummaryIndex(M, nullptr, nullptr, &PSI));
       Index = NewIndex.get();
     }
   }

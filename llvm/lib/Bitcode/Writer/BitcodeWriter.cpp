@@ -3825,14 +3825,28 @@ void ModuleBitcodeWriterBase::writePerModuleFunctionSummaryRecord(
   NameVals.push_back(FS->refs().size());
   NameVals.push_back(SpecialRefCnts.first);  // rorefcnt
   NameVals.push_back(SpecialRefCnts.second); // worefcnt
+  NameVals.push_back(FS->getSpecializeCost());
+  auto BonusBases = FS->getSpecBonusBase();
+  NameVals.push_back(BonusBases.size() * 2);
 
   for (auto &RI : FS->refs())
     NameVals.push_back(VE.getValueID(RI.getValue()));
+
+  for (auto &I : BonusBases) {
+    NameVals.push_back(I.first);
+    NameVals.push_back(I.second);
+  }
 
   bool HasProfileData =
       F.hasProfileData() || ForceSummaryEdgesCold != FunctionSummary::FSHT_None;
   for (auto &ECI : FS->calls()) {
     NameVals.push_back(getValueId(ECI.first));
+    NameVals.push_back(ECI.second.getUsagesSize() * 2);
+    auto Uses = ECI.second.getUsages();
+    for (auto &IndexValuePair : Uses) {
+      NameVals.push_back(IndexValuePair.first);
+      NameVals.push_back(IndexValuePair.second);
+    }
     if (HasProfileData)
       NameVals.push_back(static_cast<uint8_t>(ECI.second.Hotness));
     else if (WriteRelBFToSummary)
@@ -4238,6 +4252,9 @@ void IndexBitcodeWriter::writeCombinedGlobalValueSummary() {
     NameVals.push_back(0); // numrefs
     NameVals.push_back(0); // rorefcnt
     NameVals.push_back(0); // worefcnt
+    NameVals.push_back(FS->getSpecializeCost());
+    auto BonusBases = FS->getSpecBonusBase();
+    NameVals.push_back(BonusBases.size() * 2);
 
     unsigned Count = 0, RORefCnt = 0, WORefCnt = 0;
     for (auto &RI : FS->refs()) {
@@ -4255,6 +4272,11 @@ void IndexBitcodeWriter::writeCombinedGlobalValueSummary() {
     NameVals[7] = RORefCnt;
     NameVals[8] = WORefCnt;
 
+    for (auto &I : BonusBases) {
+      NameVals.push_back(I.first);
+      NameVals.push_back(I.second);
+    }
+
     bool HasProfileData = false;
     for (auto &EI : FS->calls()) {
       HasProfileData |=
@@ -4270,6 +4292,12 @@ void IndexBitcodeWriter::writeCombinedGlobalValueSummary() {
       if (!CallValueId)
         continue;
       NameVals.push_back(*CallValueId);
+      NameVals.push_back(EI.second.getUsagesSize() * 2);
+      auto Uses = EI.second.getUsages();
+      for (auto &IndexValuePair : Uses) {
+        NameVals.push_back(IndexValuePair.first);
+        NameVals.push_back(IndexValuePair.second);
+      }
       if (HasProfileData)
         NameVals.push_back(static_cast<uint8_t>(EI.second.Hotness));
     }
