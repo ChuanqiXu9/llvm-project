@@ -371,6 +371,10 @@ private:
         // IPSCCP to propagate the constant arguments.
         Function *Clone = cloneCandidateFunction(F);
         Argument *ClonedArg = Clone->arg_begin() + A.getArgNo();
+        // Functions with AvailableExternallyLinkage would be deleted
+        // in the end.
+        if (Clone->hasAvailableExternallyLinkage())
+          Clone->setLinkage(GlobalValue::InternalLinkage);
 
         // Rewrite calls to the function so that they call the clone instead.
         rewriteCallSites(F, Clone, *ClonedArg, C);
@@ -601,7 +605,8 @@ bool llvm::runFunctionSpecialization(
 
     // Determine if we can track the function's arguments. If so, add the
     // function to the solver's set of argument-tracked functions.
-    if (canTrackArgumentsInterprocedurally(&F)) {
+    if (canTrackArgumentsInterprocedurally(&F) ||
+        F.hasAvailableExternallyLinkage()) {
       LLVM_DEBUG(dbgs() << "FnSpecialization: Can track arguments\n");
       Solver.addArgumentTrackedFunction(&F);
       continue;
