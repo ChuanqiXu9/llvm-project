@@ -568,13 +568,16 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
         CGM.getIntrinsic(llvm::Intrinsic::coro_alloc), {CoroId});
   } else {
     bool ShouldElide;
-    ShouldElideCall->EvaluateAsBooleanCondition(ShouldElide, CGM.getContext());
-    if (ShouldElide)
+    if (ShouldElideCall->EvaluateAsBooleanCondition(ShouldElide, CGM.getContext())) {
+      if (ShouldElide)
+        CoroAlloc = Builder.CreateCall(
+          CGM.getIntrinsic(llvm::Intrinsic::coro_never_alloc), {CoroId});
+      else
+        CoroAlloc = Builder.CreateCall(
+          CGM.getIntrinsic(llvm::Intrinsic::coro_always_alloc), {CoroId});
+    } else
       CoroAlloc = Builder.CreateCall(
-        CGM.getIntrinsic(llvm::Intrinsic::coro_never_alloc), {CoroId});
-    else
-      CoroAlloc = Builder.CreateCall(
-        CGM.getIntrinsic(llvm::Intrinsic::coro_always_alloc), {CoroId});
+        CGM.getIntrinsic(llvm::Intrinsic::coro_alloc), {CoroId});
   }
 
   Builder.CreateCondBr(CoroAlloc, AllocBB, InitBB);

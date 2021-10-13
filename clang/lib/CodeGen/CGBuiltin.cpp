@@ -4583,6 +4583,8 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
     return EmitCoroutineIntrinsic(E, Intrinsic::coro_destroy);
   case Builtin::BI__builtin_coro_done:
     return EmitCoroutineIntrinsic(E, Intrinsic::coro_done);
+  case Builtin::BI__builtin_coro_elided:
+    return EmitCoroutineIntrinsic(E, Intrinsic::coro_elided);
   case Builtin::BI__builtin_coro_alloc:
     return EmitCoroutineIntrinsic(E, Intrinsic::coro_alloc);
   case Builtin::BI__builtin_coro_begin:

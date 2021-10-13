@@ -1291,6 +1291,8 @@ def int_coro_destroy : Intrinsic<[], [llvm_ptr_ty], [Throws]>;
 def int_coro_done : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty],
                               [IntrArgMemOnly, ReadOnly<ArgIndex<0>>,
                                NoCapture<ArgIndex<0>>]>;
+def int_coro_elided : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty], 
+                                [IntrNoMem, NoCapture<ArgIndex<0>>]>;
 def int_coro_promise : Intrinsic<[llvm_ptr_ty],
                                  [llvm_ptr_ty, llvm_i32_ty, llvm_i1_ty],
                                  [IntrNoMem, NoCapture<ArgIndex<0>>]>;

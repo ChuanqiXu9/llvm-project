@@ -74,6 +74,9 @@ bool Lowerer::lowerRemainingCoroIntrinsics(Function &F) {
       case Intrinsic::coro_never_alloc:
         II->replaceAllUsesWith(ConstantInt::getFalse(Context));
         break;
+      case Intrinsic::coro_elided:
+        II->replaceAllUsesWith(ConstantInt::getFalse(Context));
+        break;
       case Intrinsic::coro_async_resume:
         II->replaceAllUsesWith(
             ConstantPointerNull::get(cast<PointerType>(I.getType())));

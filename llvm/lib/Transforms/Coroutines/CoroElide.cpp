@@ -37,6 +37,7 @@ struct Lowerer : coro::LowererBase {
   SmallVector<CoroIdInst *, 4> CoroIds;
   SmallVector<CoroBeginInst *, 1> CoroBegins;
   SmallVector<CoroAllocInst *, 1> CoroAllocs;
+  SmallVector<CoroElidedInst *, 4> CoroElideds;
   SmallVector<CoroSubFnInst *, 4> ResumeAddr;
   DenseMap<CoroBeginInst *, SmallVector<CoroSubFnInst *, 4>> DestroyAddr;
   SmallPtrSet<const SwitchInst *, 4> CoroSuspendSwitches;
@@ -177,6 +178,11 @@ void Lowerer::elideHeapAllocations(Function *F, uint64_t FrameSize,
   for (auto *CB : CoroBegins) {
     CB->replaceAllUsesWith(FrameVoidPtr);
     CB->eraseFromParent();
+  }
+
+  for (auto *CE : CoroElideds) {
+    CE->replaceAllUsesWith(ConstantInt::getTrue(C));
+    CE->eraseFromParent();
   }
 
   // Since now coroutine frame lives on the stack we need to make sure that
@@ -323,6 +329,7 @@ bool Lowerer::processCoroId(CoroIdInst *CoroId, AAResults &AA,
   CoroAllocs.clear();
   ResumeAddr.clear();
   DestroyAddr.clear();
+  CoroElideds.clear();
 
   // Collect all coro.begin and coro.allocs associated with this coro.id.
   for (User *U : CoroId->users()) {
@@ -349,6 +356,8 @@ bool Lowerer::processCoroId(CoroIdInst *CoroId, AAResults &AA,
         default:
           llvm_unreachable("unexpected coro.subfn.addr constant");
         }
+      else if (auto *CEI = dyn_cast<CoroElidedInst>(U))
+        CoroElideds.push_back(CEI);
   }
 
   // PostSplit coro.id refers to an array of subfunctions in its Info

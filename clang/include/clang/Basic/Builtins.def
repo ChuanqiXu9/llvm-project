@@ -1581,6 +1581,7 @@ BUILTIN(__builtin_nontemporal_load, "v.", "t")
 LANGBUILTIN(__builtin_coro_resume, "vv*", "", COR_LANG)
 LANGBUILTIN(__builtin_coro_destroy, "vv*", "", COR_LANG)
 LANGBUILTIN(__builtin_coro_done, "bv*", "n", COR_LANG)
+LANGBUILTIN(__builtin_coro_elided, "bv*", "n", COR_LANG)
 LANGBUILTIN(__builtin_coro_promise, "v*v*IiIb", "n", COR_LANG)
 
 LANGBUILTIN(__builtin_coro_size, "z", "n", COR_LANG)
