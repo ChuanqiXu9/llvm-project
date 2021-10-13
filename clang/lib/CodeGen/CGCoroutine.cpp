@@ -559,10 +559,23 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
   assert(ShouldEmitLifetimeMarkers &&
          "Must emit lifetime intrinsics for coroutines");
 
-  // Backend is allowed to elide memory allocations, to help it, emit
-  // auto mem = coro.alloc() ? 0 : ... allocation code ...;
-  auto *CoroAlloc = Builder.CreateCall(
-      CGM.getIntrinsic(llvm::Intrinsic::coro_alloc), {CoroId});
+  Value *CoroAlloc = nullptr;
+  Expr *ShouldElideCall = S.getShouldElideCall();
+  if (!ShouldElideCall) {
+    // Backend is allowed to elide memory allocations, to help it, emit
+    // auto mem = coro.alloc() ? 0 : ... allocation code ...;
+    CoroAlloc = Builder.CreateCall(
+        CGM.getIntrinsic(llvm::Intrinsic::coro_alloc), {CoroId});
+  } else {
+    bool ShouldElide;
+    ShouldElideCall->EvaluateAsBooleanCondition(ShouldElide, CGM.getContext());
+    if (ShouldElide)
+      CoroAlloc = Builder.CreateCall(
+        CGM.getIntrinsic(llvm::Intrinsic::coro_never_alloc), {CoroId});
+    else
+      CoroAlloc = Builder.CreateCall(
+        CGM.getIntrinsic(llvm::Intrinsic::coro_always_alloc), {CoroId});
+  }
 
   Builder.CreateCondBr(CoroAlloc, AllocBB, InitBB);
 

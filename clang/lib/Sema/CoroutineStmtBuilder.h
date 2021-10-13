@@ -61,6 +61,7 @@ private:
   bool makeReturnObject();
   bool makeGroDeclAndReturnStmt();
   bool makeReturnOnAllocFailure();
+  bool makeShouldElide();
 };
 
 } // end namespace clang

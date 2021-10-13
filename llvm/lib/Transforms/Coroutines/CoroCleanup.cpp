@@ -68,7 +68,11 @@ bool Lowerer::lowerRemainingCoroIntrinsics(Function &F) {
         II->replaceAllUsesWith(II->getArgOperand(1));
         break;
       case Intrinsic::coro_alloc:
+      case Intrinsic::coro_always_alloc:
         II->replaceAllUsesWith(ConstantInt::getTrue(Context));
+        break;
+      case Intrinsic::coro_never_alloc:
+        II->replaceAllUsesWith(ConstantInt::getFalse(Context));
         break;
       case Intrinsic::coro_async_resume:
         II->replaceAllUsesWith(

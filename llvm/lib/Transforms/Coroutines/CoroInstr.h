@@ -71,7 +71,32 @@ class LLVM_LIBRARY_VISIBILITY CoroAllocInst : public IntrinsicInst {
 public:
   // Methods to support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const IntrinsicInst *I) {
-    return I->getIntrinsicID() == Intrinsic::coro_alloc;
+    auto ID = I->getIntrinsicID();
+    return ID == Intrinsic::coro_alloc || 
+           ID == Intrinsic::coro_always_alloc ||
+           ID == Intrinsic::coro_never_alloc;
+  }
+  static bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
+  }
+};
+
+class LLVM_LIBRARY_VISIBILITY CoroAlwaysAllocInst : public CoroAllocInst {
+public:
+  // Methods to support type inquiry through isa, cast, and dyn_cast:
+  static bool classof(const IntrinsicInst *I) {
+    return I->getIntrinsicID() == Intrinsic::coro_always_alloc;
+  }
+  static bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
+  }
+};
+
+class LLVM_LIBRARY_VISIBILITY CoroNeverAllocInst : public CoroAllocInst {
+public:
+  // Methods to support type inquiry through isa, cast, and dyn_cast:
+  static bool classof(const IntrinsicInst *I) {
+    return I->getIntrinsicID() == Intrinsic::coro_never_alloc;
   }
   static bool classof(const Value *V) {
     return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));

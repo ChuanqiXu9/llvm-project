@@ -236,6 +236,16 @@ bool Lowerer::shouldElide(Function *F, DominatorTree &DT) const {
   if (CoroAllocs.empty())
     return false;
 
+  if (llvm::all_of(CoroAllocs, [](auto *CA){
+    return isa<CoroNeverAllocInst>(CA);
+  }))
+    return true;
+
+  if (llvm::any_of(CoroAllocs, [](auto *CA){
+    return isa<CoroAlwaysAllocInst>(CA);
+  }))
+    return false;
+
   // Check that for every coro.begin there is at least one coro.destroy directly
   // referencing the SSA value of that coro.begin along each
   // non-exceptional path.

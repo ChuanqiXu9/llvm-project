@@ -1510,6 +1510,15 @@ static void splitSwitchCoroutine(Function &F, coro::Shape &Shape,
   // by the last argument of @llvm.coro.info, so that CoroElide pass can
   // determined correct function to call.
   setCoroInfo(F, Shape, Clones);
+
+  // If the Alloc is never alloc, we should mark ramp as always_inline to guarantee
+  // CoroElide.
+  CoroIdInst *CoroId = Shape.getSwitchCoroId();
+  if (CoroAllocInst *CA = CoroId->getCoroAlloc())
+    if (isa<CoroNeverAllocInst>(CA))
+      // FIXME: What if F is never inline?
+      // FIXME2: what if it is not good to inline F?
+      F.addFnAttr(Attribute::AlwaysInline);
 }
 
 static void replaceAsyncResumeFunction(CoroSuspendAsyncInst *Suspend,

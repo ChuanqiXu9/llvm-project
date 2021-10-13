@@ -330,6 +330,7 @@ class CoroutineBodyStmt final
     ResultDecl,    ///< Declaration holding the result of get_return_object.
     ReturnStmt,    ///< Return statement for the thunk function.
     ReturnStmtOnAllocFailure, ///< Return statement if allocation failed.
+    ShouldElide,   ///< Should elide the allocation
     FirstParamMove ///< First offset for move construction of parameter copies.
   };
   unsigned NumParams;
@@ -357,6 +358,7 @@ public:
     Stmt *ResultDecl = nullptr;
     Stmt *ReturnStmt = nullptr;
     Stmt *ReturnStmtOnAllocFailure = nullptr;
+    Expr *ShouldElideCall = nullptr;
     ArrayRef<Stmt *> ParamMoves;
   };
 
@@ -413,6 +415,9 @@ public:
   Stmt *getReturnStmt() const { return getStoredStmts()[SubStmt::ReturnStmt]; }
   Stmt *getReturnStmtOnAllocFailure() const {
     return getStoredStmts()[SubStmt::ReturnStmtOnAllocFailure];
+  }
+  Expr *getShouldElideCall() const {
+    return cast_or_null<Expr>(getStoredStmts()[SubStmt::ShouldElide]);
   }
   ArrayRef<Stmt const *> getParamMoves() const {
     return {getStoredStmts() + SubStmt::FirstParamMove, NumParams};

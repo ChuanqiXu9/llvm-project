@@ -1118,7 +1118,7 @@ bool CoroutineStmtBuilder::buildDependentStatements() {
          "coroutine cannot have a dependent promise type");
   this->IsValid = makeOnException() && makeOnFallthrough() &&
                   makeGroDeclAndReturnStmt() && makeReturnOnAllocFailure() &&
-                  makeNewAndDeleteExpr();
+                  makeNewAndDeleteExpr() && makeShouldElide();
   return this->IsValid;
 }
 
@@ -1586,6 +1586,54 @@ bool CoroutineStmtBuilder::makeGroDeclAndReturnStmt() {
     GroDecl->setNRVOVariable(true);
 
   this->ReturnStmt = ReturnStmt.get();
+  return true;
+}
+
+static bool diagShouldElide(Sema &S, Expr *E,
+                       CXXRecordDecl *PromiseRecordDecl,
+                       FunctionScopeInfo &Fn) {
+  auto Loc = E->getExprLoc();
+  if (auto *DeclRef = dyn_cast_or_null<DeclRefExpr>(E)) {
+    auto *Decl = DeclRef->getDecl();
+    if (CXXMethodDecl *Method = dyn_cast_or_null<CXXMethodDecl>(Decl)) {
+      if (Method->isStatic())
+        return true;
+      else
+        Loc = Decl->getLocation();
+    }
+  }
+
+  S.Diag(
+      Loc,
+      diag::err_coroutine_promise_should_elide)
+      << PromiseRecordDecl;
+  return false;
+}
+
+bool CoroutineStmtBuilder::makeShouldElide() {
+  assert(!IsPromiseDependentType &&
+         "cannot make statement while the promise type is dependent");
+
+  DeclarationName DN = S.PP.getIdentifierInfo("should_elide");
+  LookupResult Found(S, DN, Loc, Sema::LookupMemberName);
+  if (!S.LookupQualifiedName(Found, PromiseRecordDecl))
+    return true;
+
+  CXXScopeSpec SS;
+  ExprResult DeclNameExpr =
+      S.BuildDeclarationNameExpr(SS, Found, /*NeedsADL=*/false);
+  if (DeclNameExpr.isInvalid())
+    return false;
+
+  if (!diagShouldElide(S, DeclNameExpr.get(), PromiseRecordDecl, Fn))
+    return false;
+
+  ExprResult ShouldElideCall =
+      S.BuildCallExpr(nullptr, DeclNameExpr.get(), Loc, {}, Loc);
+  if (ShouldElideCall.isInvalid())
+    return false;
+
+  this->ShouldElideCall = ShouldElideCall.get();
   return true;
 }
 
