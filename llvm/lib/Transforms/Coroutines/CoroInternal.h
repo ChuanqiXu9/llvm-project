@@ -40,6 +40,7 @@ void initializeCoroCleanupLegacyPass(PassRegistry &);
 #define UNPREPARED_FOR_SPLIT "0"
 #define PREPARED_FOR_SPLIT "1"
 #define ASYNC_RESTART_AFTER_SPLIT "2"
+#define CORO_SPLITTED "2"
 
 #define CORO_DEVIRT_TRIGGER_FN "coro.devirt.trigger"
 
@@ -106,8 +107,9 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
   struct SwitchFieldIndex {
     enum {
       Resume,
-      Destroy
-
+      Destroy,
+       // Field to record whether or not this is elided
+      Elided
       // The promise field is always at a fixed offset from the start of
       // frame given its type, but the index isn't a constant for all
       // possible frames.

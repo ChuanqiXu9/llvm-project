@@ -13,6 +13,7 @@ AlwaysElideTask another_elided_coroutine() {
 
 NormalTask example2(bool cond) {
   AlwaysElideTask t = cond ? an_elided_coroutine() : another_elided_coroutine();
+  assert (t.Elided());
   co_return co_await std::move(t);
 }
 

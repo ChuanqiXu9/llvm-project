@@ -201,7 +201,8 @@ public:
         return *this;
     }
 
-    
+    coroutine_handle(coroutine_handle<> handle) : _Base(handle) {}
+
     _Promise& promise() const {
         return *static_cast<_Promise*>(
             __builtin_coro_promise(this->__handle_, alignof(_Promise), false));

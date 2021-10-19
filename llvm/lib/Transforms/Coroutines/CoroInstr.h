@@ -78,6 +78,18 @@ public:
   }
 };
 
+class LLVM_LIBRARY_VISIBILITY CoroElidedImplInst : public IntrinsicInst {
+public:
+  // Methods to support type inquiry through isa, cast, and dyn_cast:
+  static bool classof(const IntrinsicInst *I) {
+    auto ID = I->getIntrinsicID();
+    return ID == Intrinsic::coro_elided_impl;
+  }
+  static bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
+  }
+};
+
 /// This represents the llvm.coro.alloc instruction.
 class LLVM_LIBRARY_VISIBILITY CoroAllocInst : public IntrinsicInst {
 public:

@@ -42,7 +42,7 @@ public:
     TaskBase(std::experimental::coroutine_handle<> handle) : handle(handle) {}
     TaskBase(TaskBase&& t) : handle(std::exchange(t.handle, nullptr)) {}
     ~TaskBase() {
-        if (handle && !handle.elided())
+        if (handle)
             handle.destroy();
     }
 
@@ -90,6 +90,7 @@ public:
         auto &Promise = HandleType::from_address(handle.address()).promise();
         auto res = Promise._value;
         handle.destroy();
+        handle = nullptr;
         return res;
     }  
 };

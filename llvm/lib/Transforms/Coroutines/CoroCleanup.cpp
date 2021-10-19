@@ -72,9 +72,18 @@ bool Lowerer::lowerRemainingCoroIntrinsics(Function &F) {
         II->replaceAllUsesWith(ConstantInt::getTrue(Context));
         break;
       case Intrinsic::coro_never_alloc:
-        II->replaceAllUsesWith(ConstantInt::getFalse(Context));
+        // Don't elide in the original function
+        II->replaceAllUsesWith(ConstantInt::getTrue(Context));
         break;
-      case Intrinsic::coro_elided:
+      case Intrinsic::coro_elided: {
+        auto *Frame = II->getOperand(0);
+        Builder.SetInsertPoint(II);
+        auto *GEP = Builder.CreateConstGEP1_32(Builder.getInt8Ty(), Frame, 16);
+        auto *Load = Builder.CreateLoad(Type::getInt1Ty(Context), GEP);
+        II->replaceAllUsesWith(Load);
+        break;
+      }
+      case Intrinsic::coro_elided_impl:
         II->replaceAllUsesWith(ConstantInt::getFalse(Context));
         break;
       case Intrinsic::coro_async_resume:

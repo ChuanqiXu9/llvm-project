@@ -1122,6 +1122,11 @@ static StructType *buildFrameType(Function &F, coro::Shape &Shape,
     (void)B.addField(FnPtrTy, None, /*header*/ true);
     (void)B.addField(FnPtrTy, None, /*header*/ true);
 
+    (void)B.addField(Type::getInt1Ty(C), None, /*header*/ true);
+
+    // Field to record whether or not this is elided.
+    // (void)B.addField(Type::getInt1Ty(C), None, /*header*/ true);
+
     // PromiseAlloca field needs to be explicitly added here because it's
     // a header field with a fixed offset based on its alignment. Hence it
     // needs special handling and cannot be added to FrameData.Allocas.
@@ -1151,6 +1156,7 @@ static StructType *buildFrameType(Function &F, coro::Shape &Shape,
     // CoroBegin and no alias will be create before CoroBegin.
     FrameData.Allocas.emplace_back(
         PromiseAlloca, DenseMap<Instruction *, llvm::Optional<APInt>>{}, false);
+  
   // Create an entry for every spilled value.
   for (auto &S : FrameData.Spills) {
     Type *FieldType = S.first->getType();
@@ -1271,7 +1277,7 @@ struct AllocaUseVisitor : PtrUseVisitor<AllocaUseVisitor> {
     // Regardless whether the alias of the alloca is the value operand or the
     // pointer operand, we need to assume the alloca is been written.
     handleMayWrite(SI);
-
+  
     if (SI.getValueOperand() != U->get())
       return;
 
@@ -1327,6 +1333,7 @@ struct AllocaUseVisitor : PtrUseVisitor<AllocaUseVisitor> {
 
     if (!IsSimpleStoreThenLoad())
       PI.setEscaped(&SI);
+    
   }
 
   // All mem intrinsics modify the data.
@@ -1349,7 +1356,9 @@ struct AllocaUseVisitor : PtrUseVisitor<AllocaUseVisitor> {
   }
 
   void visitIntrinsicInst(IntrinsicInst &II) {
-    if (II.getIntrinsicID() != Intrinsic::lifetime_start)
+    if (II.getIntrinsicID() != Intrinsic::lifetime_start ||
+        !IsOffsetKnown || (isa<GetElementPtrInst>(U->get()) &&
+        !Offset.isZero()))
       return Base::visitIntrinsicInst(II);
     LifetimeStarts.insert(&II);
   }
@@ -1397,7 +1406,7 @@ private:
     // If lifetime information is available, we check it first since it's
     // more precise. We look at every pair of lifetime.start intrinsic and
     // every basic block that uses the pointer to see if they cross suspension
-    // points. The uses cover both direct uses as well as indirect uses.
+    // points. The uses cover both direct uses as well as indirect uses.  
     if (!LifetimeStarts.empty()) {
       for (auto *I : Users)
         for (auto *S : LifetimeStarts)

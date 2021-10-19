@@ -26,6 +26,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
@@ -61,6 +62,10 @@
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/IPO/Inliner.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/CallGraphUpdater.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -1135,6 +1140,25 @@ static void updateCoroFrame(coro::Shape &Shape, Function *ResumeFn,
       Shape.FrameTy, Shape.FramePtr, coro::Shape::SwitchFieldIndex::Destroy,
       "destroy.addr");
   Builder.CreateStore(DestroyOrCleanupFn, DestroyAddr);
+
+  CoroBeginInst *CB = nullptr;
+  for (auto *U : CoroId->users())
+    if (isa<CoroBeginInst>(U)) {
+      CB = cast<CoroBeginInst>(U);
+      break;
+    }
+  if (!CB)
+    report_fatal_error("Can't find CoroBegin for CoroId");
+  
+  auto *ElidedAddr = Builder.CreateStructGEP(
+      Shape.FrameTy, Shape.FramePtr, coro::Shape::SwitchFieldIndex::Elided,
+      "elided.addr");
+  Module *M = ResumeFn->getParent();
+  auto *ElidedFn = Intrinsic::getDeclaration(M, Intrinsic::coro_elided_impl);
+  auto *Elided = Builder.CreateCall(ElidedFn, {CB});
+  
+  Elided->setDoesNotThrow();
+  Builder.CreateStore(Elided, ElidedAddr);
 }
 
 static void postSplitCleanup(Function &F) {
@@ -2108,6 +2132,55 @@ static void addPrepareFunction(const Module &M,
     Fns.push_back(PrepareFn);
 }
 
+static bool TryInlineRamp(Function &F, SmallVector<Function *, 16>& ChangedFuncs,
+                          FunctionAnalysisManager &FAM) {
+  if (F.isDeclaration() || !F.hasFnAttribute(Attribute::AlwaysInline) ||
+      !isInlineViable(F).isSuccess())
+    return false;
+
+  auto GetAssumptionCache = [&](Function &F) -> AssumptionCache & {
+    return FAM.getResult<AssumptionAnalysis>(F);
+  };
+  SmallSetVector<CallBase *, 16> Calls;
+  bool Changed = false;
+
+  for (User *U : F.users())
+    if (auto *CB = dyn_cast<CallBase>(U))
+      if (CB->getCalledFunction() == &F)
+        Calls.insert(CB);
+
+   for (CallBase *CB : Calls) {
+      Function *Caller = CB->getCaller();
+      OptimizationRemarkEmitter ORE(Caller);
+      auto OIC = shouldInline(
+          *CB,
+          [&](CallBase &CB) {
+            return InlineCost::getAlways("always inline attribute");
+          },
+          ORE);
+      assert(OIC);
+      emitInlinedIntoBasedOnCost(ORE, CB->getDebugLoc(), CB->getParent(), F,
+                                  *Caller, *OIC, false, DEBUG_TYPE);
+
+      InlineFunctionInfo IFI(
+          /*cg=*/nullptr, GetAssumptionCache, nullptr,
+          &FAM.getResult<BlockFrequencyAnalysis>(*(CB->getCaller())),
+          &FAM.getResult<BlockFrequencyAnalysis>(F));
+
+      InlineResult Res = InlineFunction(
+          *CB, IFI, &FAM.getResult<AAManager>(F), true);
+      assert(Res.isSuccess() && "unexpected failure to inline");
+      (void)Res;
+
+      // Merge the attributes based on the inlining.
+      AttributeFuncs::mergeAttributesForInlining(*Caller, F);
+
+      Changed = true;
+    }
+
+    return Changed;
+}
+
 PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
                                      CGSCCAnalysisManager &AM,
                                      LazyCallGraph &CG, CGSCCUpdateResult &UR) {
@@ -2148,7 +2221,7 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
                       << "' state: "
                       << F.getFnAttribute(CORO_PRESPLIT_ATTR).getValueAsString()
                       << "\n");
-    F.removeFnAttr(CORO_PRESPLIT_ATTR);
+    F.addFnAttr(CORO_PRESPLIT_ATTR, CORO_SPLITTED);
 
     SmallVector<Function *, 4> Clones;
     const coro::Shape Shape = splitCoroutine(F, Clones, ReuseFrameSlot);
@@ -2159,6 +2232,12 @@ PreservedAnalyses CoroSplitPass::run(LazyCallGraph::SCC &C,
       UR.CWorklist.insert(&C);
       for (Function *Clone : Clones)
         UR.CWorklist.insert(CG.lookupSCC(CG.get(*Clone)));
+    }
+
+    SmallVector<Function *, 16> ChangedFuncs;
+    if (TryInlineRamp(F, ChangedFuncs, FAM)) {
+      for (auto *Changed : ChangedFuncs)
+        UR.CWorklist.insert(CG.lookupSCC(CG.get(*Changed)));
     }
   }
 
@@ -2246,7 +2325,7 @@ struct CoroSplitLegacy : public CallGraphSCCPass {
         prepareForSplit(*F, CG);
         continue;
       }
-      F->removeFnAttr(CORO_PRESPLIT_ATTR);
+      F->addFnAttr(CORO_PRESPLIT_ATTR, CORO_SPLITTED);
 
       SmallVector<Function *, 4> Clones;
       const coro::Shape Shape = splitCoroutine(*F, Clones, ReuseFrameSlot);

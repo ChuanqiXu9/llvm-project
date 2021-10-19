@@ -726,6 +726,7 @@ PassBuilder::buildInlinerPipeline(OptimizationLevel Level,
       buildFunctionSimplificationPipeline(Level, Phase)));
 
   MainCGPipeline.addPass(CoroSplitPass(Level != OptimizationLevel::O0));
+  MainCGPipeline.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
 
   return MIWP;
 }

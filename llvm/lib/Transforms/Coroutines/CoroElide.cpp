@@ -38,6 +38,7 @@ struct Lowerer : coro::LowererBase {
   SmallVector<CoroBeginInst *, 1> CoroBegins;
   SmallVector<CoroAllocInst *, 1> CoroAllocs;
   SmallVector<CoroElidedInst *, 4> CoroElideds;
+  SmallVector<CoroElidedImplInst *, 1> CoroElidedImpls;
   SmallVector<CoroSubFnInst *, 4> ResumeAddr;
   DenseMap<CoroBeginInst *, SmallVector<CoroSubFnInst *, 4>> DestroyAddr;
   SmallPtrSet<const SwitchInst *, 4> CoroSuspendSwitches;
@@ -178,6 +179,14 @@ void Lowerer::elideHeapAllocations(Function *F, uint64_t FrameSize,
   for (auto *CB : CoroBegins) {
     CB->replaceAllUsesWith(FrameVoidPtr);
     CB->eraseFromParent();
+  }
+
+  if (CoroElidedImpls.size() != 1)
+    report_fatal_error("Should be one coro_elided_impl only!");
+
+  for (auto *CE : CoroElidedImpls) {
+    CE->replaceAllUsesWith(ConstantInt::getTrue(C));
+    CE->eraseFromParent();
   }
 
   for (auto *CE : CoroElideds) {
@@ -330,6 +339,7 @@ bool Lowerer::processCoroId(CoroIdInst *CoroId, AAResults &AA,
   ResumeAddr.clear();
   DestroyAddr.clear();
   CoroElideds.clear();
+  CoroElidedImpls.clear();
 
   // Collect all coro.begin and coro.allocs associated with this coro.id.
   for (User *U : CoroId->users()) {
@@ -358,6 +368,8 @@ bool Lowerer::processCoroId(CoroIdInst *CoroId, AAResults &AA,
         }
       else if (auto *CEI = dyn_cast<CoroElidedInst>(U))
         CoroElideds.push_back(CEI);
+      else if (auto *CEII = dyn_cast<CoroElidedImplInst>(U))
+        CoroElidedImpls.push_back(CEII);
   }
 
   // PostSplit coro.id refers to an array of subfunctions in its Info
@@ -424,6 +436,16 @@ PreservedAnalyses CoroElidePass::run(Function &F, FunctionAnalysisManager &AM) {
   auto &M = *F.getParent();
   if (!declaresCoroElideIntrinsics(M))
     return PreservedAnalyses::all();
+
+  // Don't run elide for coroutine who are already splitted.
+  // To make the elided coroutine frame to be able to put on
+  // the frame of the parent.
+  if (F.hasFnAttribute(CORO_PRESPLIT_ATTR)) {
+    Attribute Attr = F.getFnAttribute(CORO_PRESPLIT_ATTR);
+    StringRef Value = Attr.getValueAsString();
+    if (Value == CORO_SPLITTED)
+      return PreservedAnalyses::all();
+  }
 
   Lowerer L(M);
   L.CoroIds.clear();
