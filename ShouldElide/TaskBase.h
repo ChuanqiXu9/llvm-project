@@ -1,7 +1,4 @@
-// clang++ -std=c++2a -O3 ShouldElide.cpp
 #include <type_traits>
-#include <tuple>
-#include <iostream>
 #include "experimental/coroutine"
 
 class TaskBase;
@@ -17,11 +14,15 @@ struct TaskPromiseBase {
     };
     TaskBase get_return_object() noexcept;
     std::experimental::suspend_always initial_suspend() noexcept { return {}; }
-    std::experimental::suspend_always final_suspend() noexcept { return {}; }
+    FinalAwaiter final_suspend() noexcept { return {}; }
     void unhandled_exception() noexcept {}
-    void return_void() noexcept {}
 
-    std::experimental::coroutine_handle<> continuation;
+    void return_value(int x) noexcept {
+        _value = x;
+    }
+
+    std::experimental::coroutine_handle<> continuation = std::experimental::noop_coroutine();
+    int _value;
 };
 
 struct TaskPromiseAlwaysElide : public TaskPromiseBase {
@@ -67,20 +68,30 @@ public:
         HandleType handle;
         Awaiter(HandleType handle) : handle(handle) {}
         bool await_ready() const noexcept { return false; }
-        __attribute__((__always_inline__))
-        std::experimental::coroutine_handle<void> 
-          await_suspend(std::experimental::coroutine_handle<void> continuation) noexcept {
-            HandleType::from_address(handle.address()).promise().continuation = continuation;
+       template <typename U>
+        auto await_suspend(std::experimental::coroutine_handle<U> continuation) noexcept {
+            handle.promise().continuation = continuation;
             return handle;
         }
-        void await_resume() noexcept {
+        int await_resume() noexcept {
+            auto value =  handle.promise()._value;
             handle.destroy();
+            return value;
         }
     };
 
     auto operator co_await() {
-        return Awaiter(std::exchange(handle, nullptr));
+        return Task::Awaiter(std::exchange(handle, nullptr));
     }
+
+    int start() {
+        handle.resume();
+        assert(handle.done());
+        auto &Promise = HandleType::from_address(handle.address()).promise();
+        auto res = Promise._value;
+        handle.destroy();
+        return res;
+    }  
 };
 
 using NormalTask = Task<TaskPromiseBase>;
@@ -120,36 +131,3 @@ struct TaskPromiseAlternative : public TaskPromiseBase {
 
 template <ElideTag Tag = MayElideTagT>
 using AlternativeTask = Task<TaskPromiseAlternative<Tag>>;
-
-NormalTask normal_task () {
-    co_await std::experimental::suspend_always{};
-}
-AlwaysElideTask always_elide_task () {
-    co_await std::experimental::suspend_always{};
-}
-NeverElideTask never_elide_task () {
-    co_await std::experimental::suspend_always{};
-}
-AlternativeTask<> alternative_task_default () {
-    co_await std::experimental::suspend_always{};
-}
-template <ElideTag Tag>
-AlternativeTask<Tag> alternative_task () {
-    co_await std::experimental::suspend_always{};
-}
-
-int main() {
-    auto t = normal_task();
-    std::cout << "Normal Task should not be elided. Is is elided? " << t.Elided() << "\n";
-    auto t2 = always_elide_task();
-    std::cout << "Always Elide Task should be elided.  Is is elided? " << t2.Elided() << "\n";
-    auto t3 = never_elide_task();
-    std::cout << "Never Elide Task should not be elided.  Is is elided? " << t3.Elided() << "\n";
-    auto t4 = alternative_task_default();
-    std::cout << "Default alternative task should not be elided.  Is is elided? " << t4.Elided() << "\n";
-    auto t5 = alternative_task<ShouldElideTagT>();
-    std::cout << "ShouldElideTagT should be elided. Is is elided? " << t5.Elided() << "\n";
-    
-    auto t6 = alternative_task<NoElideTagT>();
-    std::cout << "NoElideTagT should not be elided. Is is elided? " << t6.Elided() << "\n";
-}
