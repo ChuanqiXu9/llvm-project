@@ -18,7 +18,7 @@ AlternativeTask<> alternative_task_default () {
     co_await std::experimental::suspend_always{};
     co_return 43;
 }
-template <ElideTag Tag>
+template <ElideTag Tag = MayElideTagT>
 AlternativeTask<Tag> alternative_task () {
     co_await std::experimental::suspend_always{};
     co_return 43;
@@ -38,4 +38,7 @@ int main() {
 
     auto t6 = alternative_task<NoElideTagT>();
     std::cout << "NoElideTagT should not be elided. Is it elided? " << t6.Elided() << "\n";
+
+    auto t7 = alternative_task();
+    std::cout << "MayElideTagT is free to elide or not. Is it elided? " << t7.Elided() << "\n";
 }
