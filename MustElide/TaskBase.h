@@ -26,13 +26,13 @@ struct TaskPromiseBase {
 };
 
 struct TaskPromiseAlwaysElide : public TaskPromiseBase {
-    static constexpr bool should_elide() {
+    static constexpr bool must_elide() {
         return true;
     }
 };
 
 struct TaskPromiseNeverElide : public TaskPromiseBase {
-    static constexpr bool should_elide() {
+    static constexpr bool must_elide() {
         return false;
     }
 };
@@ -120,7 +120,7 @@ bool undetermism;
 
 template <ElideTag Tag>
 struct TaskPromiseAlternative : public TaskPromiseBase {
-    static constexpr bool should_elide() {
+    static constexpr bool must_elide() {
         if constexpr (std::is_same_v<Tag, ShouldElideTagT>)
             return true;
         else if constexpr (std::is_same_v<Tag, NoElideTagT>)

@@ -11022,8 +11022,8 @@ def warn_coroutine_promise_unhandled_exception_required_with_exceptions : Warnin
   InGroup<CoroutineMissingUnhandledException>;
 def err_coroutine_promise_get_return_object_on_allocation_failure : Error<
   "%0: 'get_return_object_on_allocation_failure()' must be a static member function">;
-def err_coroutine_promise_should_elide : Error <
-  "%0: 'should_elide' must be a static member function">;
+def err_coroutine_promise_must_elide : Error <
+  "%0: 'must_elide' must be a static member function">;
 def err_seh_in_a_coroutine_with_cxx_exceptions : Error<
   "cannot use SEH '__try' in a coroutine when C++ exceptions are enabled">;
 def err_coroutine_promise_new_requires_nothrow : Error<

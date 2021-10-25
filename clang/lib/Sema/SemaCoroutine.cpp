@@ -1605,7 +1605,7 @@ static bool diagShouldElide(Sema &S, Expr *E,
 
   S.Diag(
       Loc,
-      diag::err_coroutine_promise_should_elide)
+      diag::err_coroutine_promise_must_elide)
       << PromiseRecordDecl;
   return false;
 }
@@ -1614,7 +1614,7 @@ bool CoroutineStmtBuilder::makeShouldElide() {
   assert(!IsPromiseDependentType &&
          "cannot make statement while the promise type is dependent");
 
-  DeclarationName DN = S.PP.getIdentifierInfo("should_elide");
+  DeclarationName DN = S.PP.getIdentifierInfo("must_elide");
   LookupResult Found(S, DN, Loc, Sema::LookupMemberName);
   if (!S.LookupQualifiedName(Found, PromiseRecordDecl))
     return true;
