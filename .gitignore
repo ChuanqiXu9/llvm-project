@@ -23,6 +23,10 @@
 #OS X specific files.
 .DS_store
 
+# Object file and LLVM Bytecode
+*.out
+*.ll
+
 # Ignore the user specified CMake presets in subproject directories.
 /*/CMakeUserPresets.json
 

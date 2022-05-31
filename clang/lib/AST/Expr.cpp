@@ -1362,6 +1362,7 @@ CallExpr::CallExpr(StmtClass SC, Expr *Fn, ArrayRef<Expr *> PreArgs,
          "OffsetToTrailingObjects overflow!");
 
   CallExprBits.UsesADL = static_cast<bool>(UsesADL);
+  ElisionKind = CoroElisionKind::Unknown;
 
   setCallee(Fn);
   for (unsigned I = 0; I != NumPreArgs; ++I)

@@ -10500,6 +10500,9 @@ public:
   /// potentially-throwing.
   bool checkFinalSuspendNoThrow(const Stmt *FinalSuspend);
 
+  CallExpr::CoroElisionKind computeCoroElisionKind(CallExpr *CE, 
+                                               MultiExprArg ArgExprs);
+
   //===--------------------------------------------------------------------===//
   // OpenMP directives and clauses.
   //

@@ -43,7 +43,7 @@ struct Lowerer : coro::LowererBase {
 
   void elideHeapAllocations(Function *F, uint64_t FrameSize, Align FrameAlign,
                             AAResults &AA);
-  bool shouldElide(Function *F, DominatorTree &DT) const;
+  bool shouldElide(CoroIdInst *ID, DominatorTree &DT) const;
   void collectPostSplitCoroIds(Function *F);
   bool processCoroId(CoroIdInst *, AAResults &AA, DominatorTree &DT);
   bool hasEscapePath(const CoroBeginInst *,
@@ -219,11 +219,19 @@ bool Lowerer::hasEscapePath(const CoroBeginInst *CB,
   return false;
 }
 
-bool Lowerer::shouldElide(Function *F, DominatorTree &DT) const {
+bool Lowerer::shouldElide(CoroIdInst *Id, DominatorTree &DT) const {
   // If no CoroAllocs, we cannot suppress allocation, so elision is not
   // possible.
   if (CoroAllocs.empty())
     return false;
+
+  if (Id->doesCoroNoElide())
+    return false;
+
+  if (Id->doesCoroAlwaysElide())
+    return true;
+
+  Function *F = Id->getFunction();
 
   // Check that for every coro.begin there is at least one coro.destroy directly
   // referencing the SSA value of that coro.begin along each
@@ -340,7 +348,7 @@ bool Lowerer::processCoroId(CoroIdInst *CoroId, AAResults &AA,
 
   replaceWithConstant(ResumeAddrConstant, ResumeAddr);
 
-  bool ShouldElide = shouldElide(CoroId->getFunction(), DT);
+  bool ShouldElide = shouldElide(CoroId, DT);
 
   auto *DestroyAddrConstant = ConstantExpr::getExtractValue(
       Resumers,

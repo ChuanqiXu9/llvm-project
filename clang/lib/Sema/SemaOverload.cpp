@@ -13229,9 +13229,12 @@ static ExprResult FinishOverloadedCallExpr(Sema &SemaRef, Scope *S, Expr *Fn,
     if (SemaRef.DiagnoseUseOfDecl(FDecl, ULE->getNameLoc()))
       return ExprError();
     Fn = SemaRef.FixOverloadedFunctionReference(Fn, (*Best)->FoundDecl, FDecl);
-    return SemaRef.BuildResolvedCallExpr(Fn, FDecl, LParenLoc, Args, RParenLoc,
+    
+    ExprResult Ret= SemaRef.BuildResolvedCallExpr(Fn, FDecl, LParenLoc, Args, RParenLoc,
                                          ExecConfig, /*IsExecConfig=*/false,
                                          (*Best)->IsADLCandidate);
+
+    return Ret;
   }
 
   case OR_No_Viable_Function: {
@@ -13287,6 +13290,8 @@ static ExprResult FinishOverloadedCallExpr(Sema &SemaRef, Scope *S, Expr *Fn,
     // the call in the AST.
     FunctionDecl *FDecl = (*Best)->Function;
     Fn = SemaRef.FixOverloadedFunctionReference(Fn, (*Best)->FoundDecl, FDecl);
+    // llvm::outs() << "Overloaded CallExpr Deleted.\n";
+    // Fn->dump();
     return SemaRef.BuildResolvedCallExpr(Fn, FDecl, LParenLoc, Args, RParenLoc,
                                          ExecConfig, /*IsExecConfig=*/false,
                                          (*Best)->IsADLCandidate);
@@ -14559,6 +14564,8 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
     // If overload resolution picked a static member, build a
     // non-member call based on that function.
     if (Method->isStatic()) {
+      // llvm::outs() << "Overloaded CallExpr Success.\n";
+      // Method->dump();
       return BuildResolvedCallExpr(MemExprE, Method, LParenLoc, Args, RParenLoc,
                                    ExecConfig, IsExecConfig);
     }

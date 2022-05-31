@@ -326,6 +326,7 @@ class CoroutineBodyStmt final
     OnFallthrough, ///< Handler for control flow falling off the body.
     Allocate,      ///< Coroutine frame memory allocation.
     Deallocate,    ///< Coroutine frame memory deallocation.
+    MustElide,     ///< Controller of coroutine elision.
     ReturnValue,   ///< Return value for thunk function: p.get_return_object().
     ReturnStmt,    ///< Return statement for the thunk function.
     ReturnStmtOnAllocFailure, ///< Return statement if allocation failed.
@@ -342,7 +343,6 @@ class CoroutineBodyStmt final
   Stmt *const *getStoredStmts() const { return getTrailingObjects<Stmt *>(); }
 
 public:
-
   struct CtorArgs {
     Stmt *Body = nullptr;
     Stmt *Promise = nullptr;
@@ -352,6 +352,7 @@ public:
     Stmt *OnFallthrough = nullptr;
     Expr *Allocate = nullptr;
     Expr *Deallocate = nullptr;
+    Expr *MustElide = nullptr;
     Expr *ReturnValue = nullptr;
     Stmt *ReturnStmt = nullptr;
     Stmt *ReturnStmtOnAllocFailure = nullptr;
@@ -404,6 +405,10 @@ public:
   Expr *getDeallocate() const {
     return cast_or_null<Expr>(getStoredStmts()[SubStmt::Deallocate]);
   }
+  Expr *getMustElide() const {
+    return cast_or_null<Expr>(getStoredStmts()[SubStmt::MustElide]);
+  }
+
   Expr *getReturnValueInit() const {
     return cast<Expr>(getStoredStmts()[SubStmt::ReturnValue]);
   }

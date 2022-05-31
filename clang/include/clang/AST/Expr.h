@@ -2799,10 +2799,17 @@ public:
 /// a subclass for overloaded operator calls that use operator syntax, e.g.,
 /// "str1 + str2" to resolve to a function call.
 class CallExpr : public Expr {
+public:
+  enum class CoroElisionKind { May, Always, Never, Unknown };
+
+private:
+
   enum { FN = 0, PREARGS_START = 1 };
 
   /// The number of arguments in the call expression.
   unsigned NumArgs;
+
+  mutable CoroElisionKind ElisionKind;
 
   /// The location of the right parenthese. This has a different meaning for
   /// the derived classes of CallExpr.
@@ -2959,6 +2966,14 @@ public:
     CallExprBits.UsesADL = static_cast<bool>(V);
   }
   bool usesADL() const { return getADLCallKind() == UsesADL; }
+
+  CoroElisionKind getCoroElisionKind(const ASTContext &Ctx) const;
+  bool isAlwaysElision(const ASTContext &Ctx) const {
+    return getCoroElisionKind(Ctx) == CoroElisionKind::Always;
+  }
+  bool isNeverElision(const ASTContext &Ctx) const {
+    return getCoroElisionKind(Ctx) == CoroElisionKind::Never;
+  }
 
   bool hasStoredFPFeatures() const { return CallExprBits.HasFPFeatures; }
 

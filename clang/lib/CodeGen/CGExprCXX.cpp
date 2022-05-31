@@ -86,9 +86,18 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorCall(
       *this, MD, This, ImplicitParam, ImplicitParamTy, CE, Args, RtlArgs);
   auto &FnInfo = CGM.getTypes().arrangeCXXMethodCall(
       Args, FPT, CallInfo.ReqArgs, CallInfo.PrefixSize);
-  return EmitCall(FnInfo, Callee, ReturnValue, Args, nullptr,
-                  CE && CE == MustTailCall,
-                  CE ? CE->getExprLoc() : SourceLocation());
+
+  llvm::CallBase *CallOrInvoke = nullptr;
+  auto Call = EmitCall(FnInfo, Callee, ReturnValue, Args, &CallOrInvoke,
+                       CE && CE == MustTailCall,
+                       CE ? CE->getExprLoc() : SourceLocation());
+
+  if (CE->isAlwaysElision(getContext()) && CallOrInvoke)
+    CallOrInvoke->setCoroAlwaysElide();
+  else if (CE->isNeverElision(getContext()) && CallOrInvoke)
+    CallOrInvoke->setCoroNoElide();
+
+  return Call;
 }
 
 RValue CodeGenFunction::EmitCXXDestructorCall(

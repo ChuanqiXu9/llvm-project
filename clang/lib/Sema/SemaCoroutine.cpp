@@ -24,7 +24,9 @@
 #include "clang/Sema/Overload.h"
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaInternal.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallSet.h"
+
 
 using namespace clang;
 using namespace sema;
@@ -1145,7 +1147,7 @@ bool CoroutineStmtBuilder::buildDependentStatements() {
          "coroutine cannot have a dependent promise type");
   this->IsValid = makeOnException() && makeOnFallthrough() &&
                   makeGroDeclAndReturnStmt() && makeReturnOnAllocFailure() &&
-                  makeNewAndDeleteExpr();
+                  makeNewAndDeleteExpr() && makeMustElide();
   return this->IsValid;
 }
 
@@ -1582,6 +1584,69 @@ bool CoroutineStmtBuilder::makeReturnObject() {
   return true;
 }
 
+static bool diagMustElide(Sema &S, Expr *E,
+                          CXXRecordDecl *PromiseRecordDecl,
+                          FunctionScopeInfo &Fn) {
+  LookupResult CoroElision(S, &S.PP.getIdentifierTable().get("coro_elision"), E->getExprLoc(), Sema::LookupOrdinaryName);
+  S.LookupQualifiedName(CoroElision, S.getStdNamespace());
+
+  auto *CoroElisionDecl = CoroElision.getAsSingle<TagDecl>();
+  if (!CoroElisionDecl) {
+    S.Diag(E->getExprLoc(), diag::err_coro_undefined_coro_elision);
+    return false;
+  }
+                      
+  if (auto *CE = dyn_cast<CallExpr>(E)) {
+    FunctionDecl *FD = CE->getDirectCallee();
+    assert(FD);
+    QualType RetTy = FD->getReturnType();
+
+    if (!S.getASTContext().hasSameType(CoroElisionDecl->getTypeForDecl(),
+                                       RetTy.getTypePtr())) {
+      S.Diag(FD->getLocation(), diag::err_coro_must_elide_dont_reutrn_coro_elision);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool CoroutineStmtBuilder::makeMustElide() {
+  // Try to form 'p.must_elide();'
+  assert(!IsPromiseDependentType &&
+         "cannot make must elide while the promise type is dependent");
+
+  DeclarationName DN =
+      S.PP.getIdentifierInfo("must_elide");
+  LookupResult Found(S, DN, Loc, Sema::LookupMemberName);
+  if (!S.LookupQualifiedName(Found, PromiseRecordDecl))
+    return true;
+
+  CXXScopeSpec SS;
+  ExprResult MustElideNameRef =
+      S.BuildDeclarationNameExpr(SS, Found, /*NeedsADL=*/false);
+  if (MustElideNameRef.isInvalid())
+    return false;
+
+  SmallVector<Expr *> Args;
+  collectPlacementArgs(S, FD, Loc, Args);
+  if (auto *DRE = dyn_cast<DeclRefExpr>(MustElideNameRef.get()))
+    if (auto *FD = dyn_cast<FunctionDecl>(DRE->getDecl()))
+      if (FD->param_empty())
+        Args.clear();
+
+  ExprResult MustElideCall = S.BuildCallExpr(nullptr, MustElideNameRef.get(),
+                                             Loc, Args, Loc);
+  if (MustElideCall.isInvalid())
+    return false;
+
+  if (!diagMustElide(S, MustElideCall.get(), PromiseRecordDecl, Fn))
+    return false;
+
+  this->MustElide = MustElideCall.get();
+  return true;
+}
+
 static void noteMemberDeclaredHere(Sema &S, Expr *E, FunctionScopeInfo &Fn) {
   if (auto *MbrRef = dyn_cast<CXXMemberCallExpr>(E)) {
     auto *MethodDecl = MbrRef->getMethodDecl();
@@ -1777,4 +1842,63 @@ ClassTemplateDecl *Sema::lookupCoroutineTraits(SourceLocation KwLoc,
   }
   Namespace = CoroTraitsNamespaceCache;
   return StdCoroutineTraitsCache;
+}
+
+static CallExpr::CoroElisionKind computeCoroElisionKind(const CallExpr *Call, const ASTContext &Ctx) {
+  assert(Call);
+
+  const FunctionDecl *FD = Call->getDirectCallee();
+  if (!FD)
+    return CallExpr::CoroElisionKind::May;
+
+  const auto *Definition = FD->getDefinition();
+  if (!Definition)
+    Definition = FD->getTemplateInstantiationPattern();
+
+  if (!Definition)
+    return CallExpr::CoroElisionKind::May;
+
+  const auto *CBS = dyn_cast_or_null<CoroutineBodyStmt>(Definition->getBody());
+  if (!CBS)
+    return CallExpr::CoroElisionKind::May;
+
+  CallExpr *CE = dyn_cast_or_null<CallExpr>(CBS->getMustElide());
+  if (!CE)
+    return CallExpr::CoroElisionKind::May;
+
+  llvm::SmallVector<Expr *> OriginalArgs; 
+  auto _ = llvm::make_scope_exit([&]() {
+    for (unsigned I = 0; I < CE->getNumArgs(); I++)
+      CE->setArg(I, OriginalArgs[I]);
+
+    CE->computeDependence();
+  });
+
+  if (CE->getNumArgs() != 0) {
+    assert (CE->getNumArgs() == Call->getNumArgs());
+    for (unsigned I = 0; I < Call->getNumArgs(); I++) {
+      OriginalArgs.push_back(CE->getArg(I));
+      auto *Arg = const_cast<Expr*>(Call->getArg(I));
+      CE->setArg(I, new (Ctx) MaterializeTemporaryExpr(Arg->getType(), Arg, Arg->isLValue()));
+    }
+
+    CE->computeDependence();
+  }
+
+  Expr::EvalResult ER;
+  if (!CE->EvaluateAsInt(ER, Ctx, CallExpr::SE_AllowSideEffects, 
+                         /*InConstantContext*/true))
+    return CallExpr::CoroElisionKind::May;
+
+  if (!ER.Val.isInt())
+    return CallExpr::CoroElisionKind::May;
+
+  return (CallExpr::CoroElisionKind)ER.Val.getInt().getExtValue();
+}
+
+CallExpr::CoroElisionKind CallExpr::getCoroElisionKind(const ASTContext &Ctx) const {
+  // if (ElisionKind != CallExpr::CoroElisionKind::Unknown)
+  //   return ElisionKind;
+  ElisionKind = computeCoroElisionKind(this, Ctx);
+  return ElisionKind;
 }

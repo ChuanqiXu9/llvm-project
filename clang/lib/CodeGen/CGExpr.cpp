@@ -5497,6 +5497,11 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, const CGCallee &OrigCallee
     }
   }
 
+  if (E->isAlwaysElision(getContext()) && CallOrInvoke)
+    CallOrInvoke->setCoroAlwaysElide();
+  else if (E->isNeverElision(getContext()) && CallOrInvoke)
+    CallOrInvoke->setCoroNoElide();
+
   return Call;
 }
 

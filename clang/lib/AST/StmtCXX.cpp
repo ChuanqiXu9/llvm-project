@@ -117,6 +117,7 @@ CoroutineBodyStmt::CoroutineBodyStmt(CoroutineBodyStmt::CtorArgs const &Args)
   SubStmts[CoroutineBodyStmt::OnFallthrough] = Args.OnFallthrough;
   SubStmts[CoroutineBodyStmt::Allocate] = Args.Allocate;
   SubStmts[CoroutineBodyStmt::Deallocate] = Args.Deallocate;
+  SubStmts[CoroutineBodyStmt::MustElide] = Args.MustElide;
   SubStmts[CoroutineBodyStmt::ReturnValue] = Args.ReturnValue;
   SubStmts[CoroutineBodyStmt::ReturnStmt] = Args.ReturnStmt;
   SubStmts[CoroutineBodyStmt::ReturnStmtOnAllocFailure] =

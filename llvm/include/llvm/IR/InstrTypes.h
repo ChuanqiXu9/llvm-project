@@ -1512,6 +1512,10 @@ public:
     Attrs = Attrs.addFnAttribute(getContext(), Attr);
   }
 
+  void addFnAttr(StringRef Kind, StringRef Val = StringRef()) {
+     Attrs = Attrs.addFnAttribute(getContext(), Kind, Val);
+  }
+
   /// Adds the attribute to the return value.
   void addRetAttr(Attribute::AttrKind Kind) {
     Attrs = Attrs.addRetAttribute(getContext(), Kind);
@@ -1898,6 +1902,16 @@ public:
   /// Determine if the call cannot unwind.
   bool doesNotThrow() const { return hasFnAttr(Attribute::NoUnwind); }
   void setDoesNotThrow() { addFnAttr(Attribute::NoUnwind); }
+
+  bool doesCoroAlwaysElide() const { return hasFnAttr("coro_always_elide"); }
+  void setCoroAlwaysElide() {
+    addFnAttr(Attribute::AlwaysInline);
+    addFnAttr("coro_always_elide");
+  }
+  bool doesCoroNoElide() const { return hasFnAttr("coro_no_elide"); }
+  void setCoroNoElide() {
+    addFnAttr("coro_no_elide");
+  }
 
   /// Determine if the invoke cannot be duplicated.
   bool cannotDuplicate() const { return hasFnAttr(Attribute::NoDuplicate); }

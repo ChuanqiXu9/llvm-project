@@ -11270,6 +11270,12 @@ def warn_always_inline_coroutine : Warning<
 def err_coroutine_unusable_new : Error<
   "'operator new' provided by %0 is not usable with the function signature of %1"
 >;
+def err_coro_undefined_coro_elision : Error <
+  "'std::coro_elision' is not defined. It is necessary if you want to use 'must_elide'"
+>;
+def err_coro_must_elide_dont_reutrn_coro_elision : Error <
+  "'must_elide' function must return 'std::coro_elision'"
+>;
 } // end of coroutines issue category
 
 let CategoryName = "Documentation Issue" in {

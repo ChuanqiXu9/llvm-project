@@ -7918,6 +7918,13 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
       Builder.OnException = Res.get();
     }
 
+    if (auto *MustElide = S->getMustElide()) {
+      ExprResult Res = getDerived().TransformExpr(MustElide);
+      if (Res.isInvalid())
+        return StmtError();
+      Builder.MustElide = Res.get();
+    }
+
     if (auto *OnAllocFailure = S->getReturnStmtOnAllocFailure()) {
       StmtResult Res = getDerived().TransformStmt(OnAllocFailure);
       if (Res.isInvalid())

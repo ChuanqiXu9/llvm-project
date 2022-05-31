@@ -1737,6 +1737,20 @@ inlineRetainOrClaimRVCalls(CallBase &CB, objcarc::ARCInstKind RVCallKind,
   }
 }
 
+/// Helper class to decide if F is a coroutine marked by CoroID represented
+/// by I.
+static bool IsFuncCoroutineForCoroID(Instruction *I, Function *F) {
+  auto *II = dyn_cast<IntrinsicInst>(I);
+  if (!II)
+    return false;
+  if (II->getIntrinsicID() != Intrinsic::coro_id)
+    return false;
+  // Since CoroIdInst is only visible to Coroutine modules.
+  const unsigned CoroutineArg = 2;
+  assert(II->getArgOperand(CoroutineArg) && "After coro early, CoroId should be valid.");
+  return  F == II->getArgOperand(CoroutineArg)->stripPointerCasts();
+}
+
 /// This function inlines the called function into the basic block of the
 /// caller. This returns false if it is not possible to inline this call.
 /// The program is still in a well defined state if this occurs though.
@@ -1784,6 +1798,9 @@ llvm::InlineResult llvm::InlineFunction(CallBase &CB, InlineFunctionInfo &IFI,
   // If the call to the callee cannot throw, set the 'nounwind' flag on any
   // calls that we inline.
   bool MarkNoUnwind = CB.doesNotThrow();
+
+  bool IsCoroAlwaysElide = CB.doesCoroAlwaysElide();
+  bool IsCoroNeverElide = CB.doesCoroNoElide();
 
   BasicBlock *OrigBB = CB.getParent();
   Function *Caller = OrigBB->getParent();
@@ -2189,6 +2206,13 @@ llvm::InlineResult llvm::InlineFunction(CallBase &CB, InlineFunctionInfo &IFI,
         // 'nounwind'.
         if (MarkNoUnwind)
           CI->setDoesNotThrow();
+
+        if (IsFuncCoroutineForCoroID(CI, CalledFunc)) {
+          if (IsCoroAlwaysElide)
+            CI->setCoroAlwaysElide();
+          else if (IsCoroNeverElide)
+            CI->setCoroNoElide();
+        }
       }
     }
   }
