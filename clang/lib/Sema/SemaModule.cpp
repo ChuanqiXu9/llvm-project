@@ -14,6 +14,7 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Sema/SemaInternal.h"
 
 using namespace clang;
@@ -465,6 +466,9 @@ DeclResult Sema::ActOnModuleImport(SourceLocation StartLoc,
         << ModuleName << !ModuleScopes.back().ModuleInterface;
     return true;
   }
+
+  if (getPreprocessor().getPreprocessorOpts().StandardModulesDepsFormat)
+    return true;
 
   Module *Mod = getModuleLoader().loadModule(
       ImportLoc, Path, Module::AllVisible, /*IsInclusionDirective=*/false);

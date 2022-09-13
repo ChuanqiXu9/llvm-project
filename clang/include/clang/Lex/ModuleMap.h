@@ -578,6 +578,10 @@ public:
   Module *createShadowedModule(StringRef Name, bool IsFramework,
                                Module *ShadowingModule);
 
+  Module *getSourceModule() {
+    return SourceModule;
+  }
+
   /// Creates a new declaration scope for module names, allowing
   /// previously defined modules to shadow definitions from the new scope.
   ///

@@ -198,3 +198,104 @@ void ModuleDependencyCollector::addFile(StringRef Filename, StringRef FileDst) {
     if (copyToRoot(Filename, FileDst))
       HasErrors = true;
 }
+
+
+namespace {
+struct P1689ModuleDependencyPPCallbacks : public PPCallbacks {
+  P1689ModuleDependencyCollector &Collector;
+  Preprocessor &PP;
+  P1689ModuleDependencyPPCallbacks(P1689ModuleDependencyCollector &Collector,
+                              Preprocessor &PP)
+      : Collector(Collector), PP(PP) {}
+
+  void moduleImport(SourceLocation ImportLoc,
+                    ModuleIdPath Path,
+                    const Module *Imported) override {
+    P1689ModuleDependencyCollector::ModuleInfo RequiredModule;
+    RequiredModule.Name = Path[0].first->getName().str();
+    RequiredModule.Type = P1689ModuleDependencyCollector::ModuleInfo::ModuleType::Named;
+    Collector.Requires.push_back(RequiredModule);
+  }
+  void EndOfMainFile() override {
+    // We only handle named modules now.
+    if (PP.isNamedModule()) {
+      
+
+      P1689ModuleDependencyCollector::ModuleInfo ProvidedModule;
+      ProvidedModule.Name = PP.getNamedModuleName();
+      ProvidedModule.Type = P1689ModuleDependencyCollector::ModuleInfo::ModuleType::Named;
+      ProvidedModule.IsInterface = PP.isNamedInterfaceUnit();
+      // Don't put implementation (non partition) unit as Provide.
+      // Put the module as required instead. Since the implementation
+      // unit will import the primary module implicitly.
+      if (PP.isImplementationUnit())
+        Collector.Requires.push_back(ProvidedModule);
+      else
+        Collector.Provide = ProvidedModule;
+    }
+
+    Collector.writeFile();
+  }
+};
+}
+
+P1689ModuleDependencyCollector::P1689ModuleDependencyCollector(const DependencyOutputOptions &Opts)
+  : ModuleDepFormat(Opts.ModuleDepFormat),
+  ModuleDepFile(Opts.ModuleDepFile), ModuleDepOutput(Opts.ModuleDepOutput) {}
+
+void P1689ModuleDependencyCollector::attachToPreprocessor(Preprocessor &PP) {
+  PP.addPPCallbacks(std::make_unique<P1689ModuleDependencyPPCallbacks>(
+      *this, PP));
+}
+
+void P1689ModuleDependencyCollector::writeFile() {
+  if (ModuleDepFormat != ModuleDependencyFormat::Trtbd)
+    return;
+
+  std::error_code EC;
+  llvm::raw_fd_ostream OS(ModuleDepFile, EC, llvm::sys::fs::OF_Text);
+  if (EC) {
+    /* Diags.Report(diag::err_fe_error_opening) << ModuleDepFile << EC.message(); */
+    return;
+  }
+
+  OS << "{\n";
+  OS << "  \"version\": 1,\n";
+  OS << "  \"revision\": 0,\n";
+  OS << "  \"rules\": [\n";
+  OS << "    {\n";
+  OS << "      \"primary-output\": \"" << ModuleDepOutput << "\"";
+
+  // In standard C++ modules, there will only at most one provided module units.
+  if (Provide) {
+    OS << ",\n      \"provides\": [";
+    OS << "\n        {";
+    OS << "\n          \"logical-name\": \"" << Provide->Name << "\"";
+
+    // is-interface is default to true
+    if (!Provide->IsInterface)
+      OS << ",\n          \"is-interface\": false";
+
+    OS << "\n        }";
+    OS << "\n      ]";
+  }
+
+  if (!Requires.empty()) {
+    OS << ",\n      \"requires\": [";
+    bool first = true;
+    for (auto const& Require : Requires) {
+      if (!first)
+        OS << ',';
+      first = false;
+      OS << "\n        {";
+      OS << "\n          \"logical-name\": \"" << Require.Name << "\"";
+      OS << "\n        }";
+    }
+    OS << "\n      ]";
+  }
+
+  OS << "\n    }\n";
+  OS << "  ]\n";
+  OS << "}\n";
+}
+

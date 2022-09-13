@@ -499,6 +499,8 @@ void CompilerInstance::createPreprocessor(TranslationUnitKind TUKind) {
 
   // Handle generating dependencies, if requested.
   const DependencyOutputOptions &DepOpts = getDependencyOutputOpts();
+  if (!DepOpts.ModuleDepFile.empty())
+    addDependencyCollector(std::make_shared<P1689ModuleDependencyCollector>(DepOpts));
   if (!DepOpts.OutputFile.empty())
     addDependencyCollector(std::make_shared<DependencyFileGenerator>(DepOpts));
   if (!DepOpts.DOTOutputFile.empty())

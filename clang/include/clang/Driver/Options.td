@@ -714,6 +714,16 @@ def MG : Flag<["-"], "MG">, Group<M_Group>, Flags<[CC1Option]>,
     MarshallingInfoFlag<DependencyOutputOpts<"AddMissingHeaderDeps">>;
 def MJ : JoinedOrSeparate<["-"], "MJ">, Group<M_Group>,
     HelpText<"Write a compilation database entry per input">;
+def fdep_file : Joined<["-"], "fdep-file=">, Group<f_Group>, Flags<[CC1Option]>,
+    HelpText<"File for structured output dependency information">,
+    MetaVarName<"<file>">;
+def fdep_format : Joined<["-"], "fdep-format=">, Group<f_Group>, Flags<[CC1Option]>,
+    HelpText<"Format for structured output dependency information (supported: 'trtbd')">,
+    MetaVarName<"<format>">, Values<"trtbd">,
+    MarshallingInfoFlag<PreprocessorOpts<"StandardModulesDepsFormat">>;
+def fdep_output : Joined<["-"], "fdep-output=">, Group<f_Group>, Flags<[CC1Option]>,
+    HelpText<"Output file for the compilation step">,
+    MetaVarName<"<file>">;
 def MP : Flag<["-"], "MP">, Group<M_Group>, Flags<[CC1Option]>,
     HelpText<"Create phony target for each dependency (other than main file)">,
     MarshallingInfoFlag<DependencyOutputOpts<"UsePhonyTargets">>;

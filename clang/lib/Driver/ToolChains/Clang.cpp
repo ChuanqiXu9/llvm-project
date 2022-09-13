@@ -1285,6 +1285,17 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_MP);
   Args.AddLastArg(CmdArgs, options::OPT_MV);
 
+  if (Arg *ArgDepFile = Args.getLastArg(options::OPT_fdep_file)) {
+    C.addFailureResultFile(ArgDepFile->getValue(), &JA);
+    CmdArgs.push_back(Args.MakeArgString(Twine("-fdep-file=") + ArgDepFile->getValue()));
+  }
+
+  if (Arg *ArgDepOutput = Args.getLastArg(options::OPT_fdep_output))
+    CmdArgs.push_back(Args.MakeArgString(Twine("-fdep-output=") + ArgDepOutput->getValue()));
+
+  if (Arg *ArgDepFormat = Args.getLastArg(options::OPT_fdep_format))
+    CmdArgs.push_back(Args.MakeArgString(Twine("-fdep-format=") + ArgDepFormat->getValue()));
+
   // Add offload include arguments specific for CUDA/HIP.  This must happen
   // before we -I or -include anything else, because we must pick up the
   // CUDA/HIP headers from the particular CUDA/ROCm installation, rather than

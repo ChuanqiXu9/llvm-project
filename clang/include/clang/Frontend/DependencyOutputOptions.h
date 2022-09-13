@@ -28,6 +28,9 @@ enum ExtraDepKind {
   EDK_DepFileEntry,
 };
 
+/// ModuleDependencyFormat - Format for the module dependency file.
+enum class ModuleDependencyFormat { None, Trtbd };
+
 /// DependencyOutputOptions - Options for controlling the compiler dependency
 /// file generation.
 class DependencyOutputOptions {
@@ -75,6 +78,15 @@ public:
 
   /// The directory to copy module dependencies to when collecting them.
   std::string ModuleDependencyOutputDir;
+
+    /// The format for the module dependency file.
+  ModuleDependencyFormat ModuleDepFormat = ModuleDependencyFormat::None;
+
+  /// The output file for the module dependency file.
+  std::string ModuleDepFile;
+
+  /// The output path to use as the output in the module dependency file.
+  std::string ModuleDepOutput;
 
 public:
   DependencyOutputOptions()

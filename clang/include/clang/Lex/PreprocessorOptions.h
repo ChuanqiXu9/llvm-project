@@ -220,6 +220,8 @@ public:
   /// Prevents intended crashes when using #pragma clang __debug. For testing.
   bool DisablePragmaDebugCrash = false;
 
+  unsigned StandardModulesDepsFormat;
+
 public:
   PreprocessorOptions() : PrecompiledPreambleBytes(0, false) {}
 
@@ -257,6 +259,7 @@ public:
     PrecompiledPreambleBytes.first = 0;
     PrecompiledPreambleBytes.second = false;
     RetainExcludedConditionalBlocks = false;
+    StandardModulesDepsFormat = 0;
   }
 };
 

@@ -160,6 +160,35 @@ public:
   virtual bool hasErrors() { return HasErrors; }
 };
 
+/// Collects dependencies for the P1689 output format.
+class P1689ModuleDependencyCollector : public DependencyCollector {
+  ModuleDependencyFormat ModuleDepFormat = ModuleDependencyFormat::None;
+  std::string ModuleDepFile;
+  std::string ModuleDepOutput;
+
+public:
+  P1689ModuleDependencyCollector(const DependencyOutputOptions &Opts);
+  ~P1689ModuleDependencyCollector() override {}
+
+  void attachToPreprocessor(Preprocessor &PP) override;
+
+  void writeFile();
+
+  struct ModuleInfo {
+    enum class ModuleType {
+      Named,
+      AngleHeader,
+      QuoteHeader
+    };
+    std::string Name;
+    std::string SourcePath;
+    bool IsInterface = true;
+    ModuleType Type;
+  };
+  llvm::Optional<ModuleInfo> Provide;
+  std::vector<ModuleInfo> Requires;
+};
+
 /// AttachDependencyGraphGen - Create a dependency graph generator, and attach
 /// it to the given preprocessor.
 void AttachDependencyGraphGen(Preprocessor &PP, StringRef OutputFile,

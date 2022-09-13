@@ -128,6 +128,15 @@ def warn_fe_concepts_ts_flag : Warning<
   "-fconcepts-ts is deprecated - use '-std=c++20' for Concepts support">,
   InGroup<Deprecated>;
 
+def err_fe_invalid_module_dep_format : Error<
+  "unknown dependency format '%0'">;
+def err_fe_module_dependency_format_requires_dep_file : Error<
+  "-fdep-format= requires -fdep-file=">;
+def err_fe_module_dependency_format_requires_dep_output : Error<
+  "-fdep-format= requires -fdep-output=">;
+def err_fe_module_dependency_file_requires_dep_format : Error<
+  "-fdep-file= requires -fdep-format=">;
+
 def err_fe_unable_to_load_basic_block_sections_file : Error<
     "unable to load basic block sections function list: '%0'">;
 
