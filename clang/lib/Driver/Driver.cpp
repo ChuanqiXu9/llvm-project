@@ -5502,6 +5502,33 @@ const char *Driver::GetNamedOutputPath(Compilation &C, const JobAction &JA,
     return "-";
   }
 
+  if (isa<PrecompileJobAction>(JA) && JA.getType() == types::TY_ModuleFile) {
+    SmallString<128> Path;
+    if (Arg *A = C.getArgs().getLastArg(options::OPT_fmodules_cache_path))
+      Path = A->getValue();
+    else
+      Driver::getDefaultModuleCachePath(Path);
+
+    // Use `llvm::sys::fs::create_directory` instead of `llvm::sys::fs::create_directories`
+    // to avoid user passing surprising path. Now the compiler would emit error
+    // if the user passes `abc/def` while `abc` doesn't exist. But `llvm::sys::fs::create_directories`
+    // will create `abc` when the compiler find it doesn't exist.
+    std::error_code EC = llvm::sys::fs::create_directory(Path, /*IgnoreExisting =*/true);
+    if (EC)
+      Diag(clang::diag::err_creating_default_module_cache_path) << Path << EC.message();
+
+    if (Arg *A = C.getArgs().getLastArg(options::OPT_fmodule_name_EQ))
+      llvm::sys::path::append(Path, A->getValue());
+    else {
+      StringRef Name = llvm::sys::path::filename(BaseInput);
+      llvm::sys::path::append(Path, Name.rsplit('.').first);
+      Path += ".";
+      Path += types::getTypeTempSuffix(JA.getType(), IsCLMode());
+    }
+
+    return C.addResultFile(C.getArgs().MakeArgString(Path.c_str()), &JA);
+  }
+
   if (IsDXCMode() && !C.getArgs().hasArg(options::OPT_o))
     return "-";
 

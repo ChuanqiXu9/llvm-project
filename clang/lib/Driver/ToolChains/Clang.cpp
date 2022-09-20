@@ -3675,6 +3675,7 @@ static void RenderModulesOptions(Compilation &C, const Driver &D,
                                  const ArgList &Args, const InputInfo &Input,
                                  const InputInfo &Output,
                                  ArgStringList &CmdArgs, bool &HaveModules) {
+  bool HasCXXModules = HaveModules;
   // -fmodules enables the use of precompiled modules (off by default).
   // Users can pass -fno-cxx-modules to turn off modules support for
   // C++/Objective-C++ programs.
@@ -3716,33 +3717,33 @@ static void RenderModulesOptions(Compilation &C, const Driver &D,
                     options::OPT_fno_implicit_modules, HaveClangModules)) {
     if (HaveModules)
       CmdArgs.push_back("-fno-implicit-modules");
-  } else if (HaveModules) {
+  } else if (HaveModules)
     ImplicitModules = true;
-    // -fmodule-cache-path specifies where our implicitly-built module files
-    // should be written.
-    SmallString<128> Path;
-    if (Arg *A = Args.getLastArg(options::OPT_fmodules_cache_path))
-      Path = A->getValue();
 
-    bool HasPath = true;
-    if (C.isForDiagnostics()) {
-      // When generating crash reports, we want to emit the modules along with
-      // the reproduction sources, so we ignore any provided module path.
-      Path = Output.getFilename();
-      llvm::sys::path::replace_extension(Path, ".cache");
-      llvm::sys::path::append(Path, "modules");
-    } else if (Path.empty()) {
-      // No module path was provided: use the default.
-      HasPath = Driver::getDefaultModuleCachePath(Path);
-    }
+  // -fmodule-cache-path specifies where our implicitly-built module files
+  // should be written.
+  SmallString<128> ModulesCachePath;
+  if (Arg *A = Args.getLastArg(options::OPT_fmodules_cache_path))
+    ModulesCachePath = A->getValue();
 
-    // `HasPath` will only be false if getDefaultModuleCachePath() fails.
-    // That being said, that failure is unlikely and not caching is harmless.
-    if (HasPath) {
-      const char Arg[] = "-fmodules-cache-path=";
-      Path.insert(Path.begin(), Arg, Arg + strlen(Arg));
-      CmdArgs.push_back(Args.MakeArgString(Path));
-    }
+  bool HasModulesCachePath = true;
+  if (C.isForDiagnostics()) {
+    // When generating crash reports, we want to emit the modules along with
+    // the reproduction sources, so we ignore any provided module path.
+    ModulesCachePath = Output.getFilename();
+    llvm::sys::path::replace_extension(ModulesCachePath, ".cache");
+    llvm::sys::path::append(ModulesCachePath, "modules");
+  } else if (ModulesCachePath.empty()) {
+    // No module path was provided: use the default.
+    HasModulesCachePath = Driver::getDefaultModuleCachePath(ModulesCachePath);
+  }
+
+  // `HasModulesCachePath` will only be false if getDefaultModuleCachePath() fails.
+  // That being said, that failure is unlikely and not caching is harmless.
+  if (HasModulesCachePath && ImplicitModules) {
+    const char Arg[] = "-fmodules-cache-path=";
+    ModulesCachePath.insert(ModulesCachePath.begin(), Arg, Arg + strlen(Arg));
+    CmdArgs.push_back(Args.MakeArgString(ModulesCachePath));
   }
 
   if (HaveModules) {
@@ -3752,6 +3753,11 @@ static void RenderModulesOptions(Compilation &C, const Driver &D,
           std::string("-fprebuilt-module-path=") + A->getValue()));
       A->claim();
     }
+
+    if (HasCXXModules)
+      CmdArgs.push_back(Args.MakeArgString(
+          std::string("-fprebuilt-module-path=") + ModulesCachePath));
+
     if (Args.hasFlag(options::OPT_fprebuilt_implicit_modules,
                      options::OPT_fno_prebuilt_implicit_modules, false))
       CmdArgs.push_back("-fprebuilt-implicit-modules");
