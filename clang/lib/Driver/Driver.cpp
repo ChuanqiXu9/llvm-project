@@ -5532,6 +5532,30 @@ const char *Driver::GetNamedOutputPath(Compilation &C, const JobAction &JA,
     return "-";
   }
 
+  if (isa<PrecompileJobAction>(JA) && JA.getType() == types::TY_ModuleFile) {
+    if (Arg *A = C.getArgs().getLastArg(options::OPT_fcxx_module_file_output))
+      return C.addResultFile(A->getValue(),  &JA);
+
+    SmallString<128> Path;
+    if (Arg *A = C.getArgs().getLastArg(options::OPT_fcxx_modules_cache_path))
+      Path = A->getValue();
+    else
+      Driver::getDefaultModuleCachePath(Path);
+
+    std::error_code EC =
+        llvm::sys::fs::create_directories(Path, /*IgnoreExisting =*/true);
+    if (EC)
+      Diag(clang::diag::err_creating_default_module_cache_path)
+          << Path << EC.message();
+    
+    StringRef Name = llvm::sys::path::filename(BaseInput);
+    llvm::sys::path::append(Path, Name.rsplit('.').first);
+    Path += ".";
+    Path += types::getTypeTempSuffix(JA.getType(), IsCLMode());
+
+    return C.addResultFile(C.getArgs().MakeArgString(Path.c_str()), &JA);
+  }
+
   if (IsDXCMode() && !C.getArgs().hasArg(options::OPT_o))
     return "-";
 

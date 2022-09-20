@@ -3735,6 +3735,7 @@ static bool RenderModulesOptions(Compilation &C, const Driver &D,
           std::string("-fprebuilt-module-path=") + A->getValue()));
       A->claim();
     }
+
     if (Args.hasFlag(options::OPT_fprebuilt_implicit_modules,
                      options::OPT_fno_prebuilt_implicit_modules, false))
       CmdArgs.push_back("-fprebuilt-implicit-modules");
@@ -3742,6 +3743,18 @@ static bool RenderModulesOptions(Compilation &C, const Driver &D,
                      options::OPT_fno_modules_validate_input_files_content,
                      false))
       CmdArgs.push_back("-fvalidate-ast-input-files-content");
+  }
+
+  // If we're in standard c++ modules, lookup in cache path automatically.
+  if (HaveStdCXXModules) {
+    SmallString<128> Path;
+    if (Arg *A = Args.getLastArg(options::OPT_fcxx_modules_cache_path))
+      Path = A->getValue();
+    else
+      Driver::getDefaultModuleCachePath(Path);
+    if (!Path.empty())
+      CmdArgs.push_back(Args.MakeArgString(
+          std::string("-fprebuilt-module-path=") + Path));
   }
 
   // -fmodule-name specifies the module that is currently being built (or

@@ -2268,6 +2268,12 @@ defm declspec : BoolOption<"f", "declspec",
 def fmodules_cache_path : Joined<["-"], "fmodules-cache-path=">, Group<i_Group>,
   Flags<[NoXarchOption, CC1Option]>, MetaVarName<"<directory>">,
   HelpText<"Specify the module cache path">;
+def fcxx_modules_cache_path : Joined<["-"], "fc++-modules-cache-path=">, Group<i_Group>,
+  Flags<[NoXarchOption, CC1Option]>, MetaVarName<"<directory>">,
+  HelpText<"Specify the module cache path for standard c++ modules">;
+def fcxx_module_file_output : Joined<["-"], "fc++-module-file-output=">, Group<f_Group>,
+  Flags<[NoXarchOption, CC1Option]>,
+  HelpText<"Specify the destination of built module interaface in one phase compilation model">;
 def fmodules_user_build_path : Separate<["-"], "fmodules-user-build-path">, Group<i_Group>,
   Flags<[NoXarchOption, CC1Option]>, MetaVarName<"<directory>">,
   HelpText<"Specify the module user build path">,

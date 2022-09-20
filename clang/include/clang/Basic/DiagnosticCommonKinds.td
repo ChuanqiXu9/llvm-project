@@ -349,6 +349,8 @@ def err_unable_to_make_temp : Error<
 // Modules
 def err_module_format_unhandled : Error<
   "no handler registered for module format '%0'">, DefaultFatal;
+def err_creating_default_module_cache_path : Error<
+  "unable to create default module cache path \"%0\": %1">;
 
 // TransformActions
 // TODO: Use a custom category name to distinguish rewriter errors.
