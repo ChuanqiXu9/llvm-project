@@ -13,5 +13,5 @@ CC=clang CXX=clang++ cmake -DCMake_TEST_MODULE_COMPILATION=named,partitions,inte
 
 cd build
 ninja -v
-./simple
+./Hello
 ```

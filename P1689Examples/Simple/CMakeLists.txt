@@ -10,11 +10,11 @@ include("${CMake_TEST_MODULE_COMPILATION_RULES}")
 add_executable(simple)
 target_sources(simple
   PRIVATE
-    main.cxx
+    main.cpp
   PRIVATE
     FILE_SET CXX_MODULES
       BASE_DIRS
         "${CMAKE_CURRENT_SOURCE_DIR}"
       FILES
-        importable.cxx)
+        importable.cppm)
 target_compile_features(simple PUBLIC cxx_std_20)

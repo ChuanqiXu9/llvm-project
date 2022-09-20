@@ -4,6 +4,9 @@ Draft for implementing P1689R5 based on clang-trunk.
 
 For each TU, now we can generate the direct dependency information for named modules as the P1689R5 described. We can found the result from test/Modules/P1689.cpp.
 
+# Examples
+
+Look at the `P1689Examples` section for examples.
 
 # Possible improvement?
 - In the section of `Example scanning output`, it shows
