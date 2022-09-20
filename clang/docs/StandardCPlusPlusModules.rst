@@ -142,8 +142,7 @@ Then we type:
 
 .. code-block:: console
 
-  $ clang++ -std=c++20 Hello.cppm --precompile -o Hello.pcm
-  $ clang++ -std=c++20 use.cpp -fprebuilt-module-path=. Hello.pcm -o Hello.out
+  $ clang++ -std=c++20 Hello.cppm use.cpp -o Hello.out
   $ ./Hello.out
   Hello World!
 
@@ -223,7 +222,21 @@ The ``-fmodules-ts`` option is deprecated and is planned to be removed.
 How to produce a BMI
 ~~~~~~~~~~~~~~~~~~~~
 
-It is possible to generate a BMI for an importable module unit by specifying the ``--precompile`` option.
+It is possible to generate a BMI explicitly for an importable
+module unit by specifying the ``--precompile`` option.
+
+Also if when we compile an importable module unit to an object file,
+the compiler will generate the corresponding BMI implicitly.
+
+The destination for the implicitly generated BMI will be:
+
+* (1) If the name of the BMI is specified by `-fmodule-bmi-output={BMI-destination-path}` flag,
+  `{BMI-destination-path}` will be the destination for the implicitly generated BMI.
+* (2) If the name of the BMI is not specified, the file name of the BMI will be
+  the same with the name with source file except with the different suffix `.pcm`.
+  For example, if the source file is `M.cppm`, then the name of the implicitly
+  generated BMI in this manner will be `M.pcm`. And the BMI will live in the module cache.
+  See :ref:`Module Cache Path<Module Cache Path>` for the rules about the module cache.
 
 File name requirement
 ~~~~~~~~~~~~~~~~~~~~~
@@ -308,6 +321,27 @@ the above example could be rewritten into:
 
 ``-fprebuilt-module-path`` is more convenient and ``-fmodule-file`` is faster since
 it saves time for file lookup.
+
+Module Cache Path
+~~~~~~~~~~~~~~~~~
+
+When we compile an importable module unit to an object file directly, the BMI
+will be generated in the module cache path.
+Users can specifiy the module cache path by ``-fc++-modules-cache-path=/path/`` option.
+If the module cache path is not specified explicitly, the compiler will choose
+the default module cache path.
+
+If we set the environment variable ``CLANG_MODULE_CACHE_PATH``, its value will
+be the default module cache path.
+Otherwise, the default module path is system specified. In Unix systems, its value
+will be ``~/.cache/clang/ModuleCache/``.
+
+If the directory specified by module cache path doesn't exist,
+the compiler will try to create the directory.
+The compiler will emit an error if it fails to create the directory.
+
+The module cache path will be passed to ``-fprebuilt-module-path`` so that
+the translation unit are able to lookup these implicitly generated BMI implicitly.
 
 Remember that module units still have an object counterpart to the BMI
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -874,9 +908,52 @@ purposes of optimization (but definitions of these functions are still not inclu
 this means the build speedup at higher optimization levels may be lower than expected given ``O0`` experience, 
 but does provide by more optimization opportunities.
 
-Can we use clang modules with standard c++ modules
---------------------------------------------------
+Why two-phase compilation?
+--------------------------
 
-We **wish** to support clang modules and standard c++ modules at the same time.
-But the mixed using form is not well used/tested yet.
-So it'll be much appreciated if you registered a new issue if you find one.
+The readers may notice that the document generates the BMI explicitly.
+We call this manner as two-phase compilation
+(sources to BMIs and BMIs to object files) to disambiguate the traditional
+compilation process (sources to object files directly),
+which we call one-phase compilation.
+
+The two-phase compilation will have higher parallelism than the one-phase compilation.
+Image the following example:
+
+.. code-block:: c++
+
+  // A.cppm
+  export module A;
+  // ...
+
+  // B.cppm
+  export module B;
+  import A;
+
+  // C.cpp
+  import B;
+
+In this example, `C.cpp` depends on Module B and `B.cppm` depends on Module A.
+So the compilation process in one-phase style will be:
+
+.. code-block:: text
+
+  A.cppm --- A.pcm ---> A.o ->
+                               B.cppm --- B.pcm ---> B.o ->
+                                                            C.cppm --- C.pcm ---> C.o
+
+But if it is compiled by the two-phase compilation, the process will be:
+
+.. code-block:: text
+
+  A.cppm --- A.pcm ---> A.o
+                   B.cppm --- B.pcm ---> B.o
+                                    C.cppm --- C.pcm ---> C.o
+
+From the example, we can find the two-phase compilation can bring more parallelism and
+the higher compilation speed.
+Especially, the middle end and the backend usually take much much more time than the frontend.
+So the gap will be larger in larger projects.
+
+So we highly recommend to use two-phase compilation in real workloads
+while the one-phase compilation model are more suitable for quick POC and demo examples.
