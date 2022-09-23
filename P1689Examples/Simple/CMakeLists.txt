@@ -17,4 +17,8 @@ target_sources(simple
         "${CMAKE_CURRENT_SOURCE_DIR}"
       FILES
         importable.cppm)
+
+
+# I don't know how to spcify "${CMAKE_BINARY_DIR}/CMakeFiles/simple.dir" properly
+SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -fmodules-cache-path=${CMAKE_BINARY_DIR}/CMakeFiles/simple.dir")
 target_compile_features(simple PUBLIC cxx_std_20)
