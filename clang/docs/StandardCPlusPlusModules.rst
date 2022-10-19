@@ -874,3 +874,9 @@ purposes of optimization (but definitions of these functions are still not inclu
 this means the build speedup at higher optimization levels may be lower than expected given ``O0`` experience, 
 but does provide by more optimization opportunities.
 
+Can we use clang modules with standard c++ modules
+--------------------------------------------------
+
+We **wish** to support clang modules and standard c++ modules at the same time.
+But the mixed using form is not well used/tested yet.
+So it'll be much appreciated if you registered a new issue if you find one.
