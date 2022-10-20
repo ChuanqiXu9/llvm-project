@@ -1,0 +1,25 @@
+{
+  "revision": 0,
+  "rules": [
+    {
+      "primary-output": "build/CMakeFiles/simple.dir/importable.cppm.o",
+      "provides": [
+        {
+          "is-interface": true,
+          "logical-name": "importable",
+          "source-path": "importable.cppm"
+        }
+      ]
+    },
+    {
+      "primary-output": "build/CMakeFiles/simple.dir/main.cpp.o",
+      "requires": [
+        {
+          "logical-name": "importable",
+          "source-path": "importable.cppm"
+        }
+      ]
+    }
+  ],
+  "version": 1
+}

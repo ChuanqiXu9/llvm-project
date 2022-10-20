@@ -1,0 +1,32 @@
+[
+    {
+        "directory": ".",
+        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Hello.cppm",
+        "file": "Hello.cppm",
+        "output": "Hello.o"
+    },
+    {
+        "directory": ".",
+        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Hello-impl_part.cppm",
+        "file": "Hello-impl_part.cppm",
+        "output": "Hello-impl_part.o"
+    },
+    {
+        "directory": ".",
+        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Hello-interface_part.cppm",
+        "file": "Hello-interface_part.cppm",
+        "output": "Hello-interface_part.o"
+    },
+    {
+        "directory": ".",
+        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Impl.cpp",
+        "file": "Impl.cpp",
+        "output": "Impl.o"
+    },
+    {
+        "directory": ".",
+        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Use.cpp",
+        "file": "Use.cpp",
+        "output": "Use.o"
+    }
+]

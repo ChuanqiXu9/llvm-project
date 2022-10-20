@@ -1,0 +1,70 @@
+{
+  "revision": 0,
+  "rules": [
+    {
+      "primary-output": "Hello-impl_part.o",
+      "provides": [
+        {
+          "is-interface": false,
+          "logical-name": "Hello:impl_part",
+          "source-path": "Hello-impl_part.cppm"
+        }
+      ],
+      "requires": [
+        {
+          "logical-name": "Hello:interface_part",
+          "source-path": "Hello-interface_part.cppm"
+        }
+      ]
+    },
+    {
+      "primary-output": "Hello-interface_part.o",
+      "provides": [
+        {
+          "is-interface": true,
+          "logical-name": "Hello:interface_part",
+          "source-path": "Hello-interface_part.cppm"
+        }
+      ]
+    },
+    {
+      "primary-output": "Hello.o",
+      "provides": [
+        {
+          "is-interface": true,
+          "logical-name": "Hello",
+          "source-path": "Hello.cppm"
+        }
+      ],
+      "requires": [
+        {
+          "logical-name": "Hello:interface_part",
+          "source-path": "Hello-interface_part.cppm"
+        },
+        {
+          "logical-name": "Hello:impl_part",
+          "source-path": "Hello-impl_part.cppm"
+        }
+      ]
+    },
+    {
+      "primary-output": "Impl.o",
+      "requires": [
+        {
+          "logical-name": "Hello",
+          "source-path": "Hello.cppm"
+        }
+      ]
+    },
+    {
+      "primary-output": "Use.o",
+      "requires": [
+        {
+          "logical-name": "Hello",
+          "source-path": "Hello.cppm"
+        }
+      ]
+    }
+  ],
+  "version": 1
+}
