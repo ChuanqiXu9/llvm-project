@@ -86,6 +86,11 @@ public:
   getDependencyFile(const std::vector<std::string> &CommandLine, StringRef CWD,
                     llvm::Optional<StringRef> ModuleName = None);
 
+  llvm::Expected<clang::tooling::dependencies::P1689Rule>
+  getP1689ModuleDependencyFile(const clang::tooling::CompileCommand &Command,
+                               StringRef CWD,
+                               llvm::Optional<StringRef> ModuleName = None);
+
   /// Collect the full module dependency graph for the input, ignoring any
   /// modules which have already been seen. If \p ModuleName isn't empty, this
   /// function returns the full dependency information of module \p ModuleName.

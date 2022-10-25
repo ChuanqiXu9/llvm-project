@@ -317,6 +317,7 @@ private:
 
   /// The module import path that we're currently processing.
   SmallVector<std::pair<IdentifierInfo *, SourceLocation>, 2> ModuleImportPath;
+  bool IsAtImport = false;
 
   /// Whether the last token we lexed was an '@'.
   bool LastTokenWasAt = false;
@@ -460,6 +461,117 @@ private:
   };
 
   TrackGMF TrackGMFState = TrackGMF::BeforeGMFIntroducer;
+
+  // Track the c++20 module decl.
+  class ModuleDeclSeq {
+    enum ModuleDeclState : int {
+      NotAModuleDecl,
+      FoundExport,
+      InterfaceCandidate,
+      ImplementationCandidate,
+      NamedModuleInterface,
+      NamedModuleImplementation,
+    };
+  public:
+    ModuleDeclSeq() : State(NotAModuleDecl) {
+
+    }
+
+    void handleExport() {
+      if (State == NotAModuleDecl)
+        State = FoundExport;
+      else if (!isNamedModule())
+        reset();
+    }
+
+    void handleModule() {
+      if (State == FoundExport)
+        State = InterfaceCandidate;
+      else if (State == NotAModuleDecl)
+        State = ImplementationCandidate;
+      else if (!isNamedModule())
+        reset();
+    }
+
+    void handleIdentifier(IdentifierInfo* Identifier) {
+      if (isModuleCandidate() && Identifier)
+        Name += Identifier->getName().str();
+      else if (!isNamedModule())
+        reset();
+    }
+
+    void handleColon() {
+      if (isModuleCandidate())
+        Name += ":";
+      else if (!isNamedModule())
+        reset();
+    }
+
+    void handlePeriod() {
+      if (isModuleCandidate())
+        Name += ".";
+      else if (!isNamedModule())
+        reset();
+    }
+
+    void handleSemi() {
+      if (!Name.empty() && isModuleCandidate()) {
+        if (State == InterfaceCandidate)
+          State = NamedModuleInterface;
+        else if (State == ImplementationCandidate)
+          State = NamedModuleImplementation;
+        else
+          llvm_unreachable("Unimaged ModuleDeclState.");  
+      } else if (!isNamedModule())
+        reset();
+    }
+
+    void handleMisc() {
+      if (!isNamedModule())
+        reset();
+    }
+
+    bool isModuleCandidate() const {
+      return State == InterfaceCandidate ||
+             State == ImplementationCandidate;
+    }
+
+    bool isNamedModule() const {
+      return State == NamedModuleInterface ||
+             State == NamedModuleImplementation;
+    }
+
+    bool isNamedInterface() const {
+      return State == NamedModuleInterface;
+    }
+
+    bool isImplementationUnit() const {
+      return State == NamedModuleImplementation &&
+             !getName().contains(':');
+    }
+
+    StringRef getName() const {
+      assert(isNamedModule() && "Can't get name from a non named module");
+      return Name;
+    }
+
+    StringRef getPrimaryName() const {
+      assert(isNamedModule() && "Can't get name from a non named module");
+      return getName().split(':').first;
+    }
+
+    void reset() {
+      Name.clear();
+      State = NotAModuleDecl;
+    }
+
+  private:
+    ModuleDeclState State;
+    std::string Name;
+  
+  };
+
+  ModuleDeclSeq ModuleDeclState;
 
   /// Whether the module import expects an identifier next. Otherwise,
   /// it expects a '.' or ';'.
@@ -2225,6 +2337,30 @@ public:
 
   /// Retrieves the module whose implementation we're current compiling, if any.
   Module *getCurrentModuleImplementation();
+
+  bool isNamedModule() const {
+    return ModuleDeclState.isNamedModule();
+  }
+
+  bool isNamedInterfaceUnit() const {
+    return ModuleDeclState.isNamedInterface();
+  }
+
+  StringRef getNamedModuleName() const {
+    return ModuleDeclState.getName();
+  }
+
+  bool isImplementationUnit() const {
+    return ModuleDeclState.isImplementationUnit();
+  }
+
+  bool isImportingCXXNamedModules() const {
+    // ModuleImportPath will be non-empty only if we're importing
+    // Standard C++ named modules.
+    // NOTE: modules-ts has different semantics so we need to test
+    // for std modules here.
+    return !ModuleImportPath.empty() && getLangOpts().CPlusPlusModules && !IsAtImport;
+  }
 
   /// Allocate a new MacroInfo object with the provided SourceLocation.
   MacroInfo *AllocateMacroInfo(SourceLocation L);

@@ -110,6 +110,54 @@ llvm::Expected<std::string> DependencyScanningTool::getDependencyFile(
   return Output;
 }
 
+llvm::Expected<P1689Rule>
+  DependencyScanningTool::getP1689ModuleDependencyFile(
+    const clang::tooling::CompileCommand &Command, StringRef CWD,
+    llvm::Optional<StringRef> ModuleName) {
+  class P1689ModuleDependencyPrinterConsumer : public DependencyConsumer {
+    public:
+      P1689ModuleDependencyPrinterConsumer(P1689Rule &Rule,
+                  const CompileCommand &Command) : Filename(Command.Filename), Rule(Rule) {
+        Rule.PrimaryOutput = Command.Output;
+      }
+
+      void
+      handleDependencyOutputOpts(const DependencyOutputOptions &Opts) override {}
+
+      void handleFileDependency(StringRef File) override {}
+
+      void handlePrebuiltModuleDependency(PrebuiltModuleDep PMD) override {}
+
+      void handleModuleDependency(ModuleDeps MD) override {}
+
+      void handleContextHash(std::string Hash) override {}
+
+      std::string lookupModuleOutput(const ModuleID &ID,
+                                     ModuleOutputKind Kind) override {
+        llvm::report_fatal_error("unexpected call to lookupModuleOutput");
+      }
+
+      void handleP1689Format(llvm::Optional<StdCXXModuleInfo> Provided,
+                             std::vector<StdCXXModuleInfo> Requires) override {
+        Rule.Provides = Provided;
+        if (Rule.Provides)
+          Rule.Provides->SourcePath = Filename.str();
+        Rule.Requires = Requires;
+      }
+
+    private:
+      StringRef Filename;
+      clang::tooling::dependencies::P1689Rule &Rule;
+  };
+
+  P1689Rule Rule;
+  P1689ModuleDependencyPrinterConsumer Consumer(Rule, Command);
+  auto Result = Worker.computeDependencies(CWD, Command.CommandLine, Consumer, ModuleName);
+  if (Result)
+    return std::move(Result);
+  return Rule;
+}
+
 llvm::Expected<FullDependenciesResult>
 DependencyScanningTool::getFullDependencies(
     const std::vector<std::string> &CommandLine, StringRef CWD,

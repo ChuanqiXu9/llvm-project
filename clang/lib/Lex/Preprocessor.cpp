@@ -872,6 +872,7 @@ bool Preprocessor::HandleIdentifier(Token &Identifier) {
       CurLexerKind != CLK_CachingLexer) {
     ModuleImportLoc = Identifier.getLocation();
     ModuleImportPath.clear();
+    IsAtImport = true;
     ModuleImportExpectsIdentifier = true;
     CurLexerKind = CLK_LexAfterModuleImport;
   }
@@ -939,6 +940,7 @@ void Preprocessor::Lex(Token &Result) {
     case tok::semi:
       TrackGMFState.handleSemi();
       ImportSeqState.handleSemi();
+      ModuleDeclState.handleSemi();
       break;
     case tok::header_name:
     case tok::annot_header_unit:
@@ -947,6 +949,13 @@ void Preprocessor::Lex(Token &Result) {
     case tok::kw_export:
       TrackGMFState.handleExport();
       ImportSeqState.handleExport();
+      ModuleDeclState.handleExport();
+      break;
+    case tok::colon:
+      ModuleDeclState.handleColon();
+      break;
+    case tok::period:
+      ModuleDeclState.handlePeriod();
       break;
     case tok::identifier:
       if (Result.getIdentifierInfo()->isModulesImport()) {
@@ -955,18 +964,25 @@ void Preprocessor::Lex(Token &Result) {
         if (ImportSeqState.afterImportSeq()) {
           ModuleImportLoc = Result.getLocation();
           ModuleImportPath.clear();
+          IsAtImport = false;
           ModuleImportExpectsIdentifier = true;
           CurLexerKind = CLK_LexAfterModuleImport;
         }
         break;
       } else if (Result.getIdentifierInfo() == getIdentifierInfo("module")) {
         TrackGMFState.handleModule(ImportSeqState.afterTopLevelSeq());
+        ModuleDeclState.handleModule();
         break;
+      } else {
+        ModuleDeclState.handleIdentifier(Result.getIdentifierInfo());
+        if (ModuleDeclState.isModuleCandidate())
+          break;
       }
       [[fallthrough]];
     default:
       TrackGMFState.handleMisc();
       ImportSeqState.handleMisc();
+      ModuleDeclState.handleMisc();
       break;
     }
   }
@@ -1150,6 +1166,15 @@ bool Preprocessor::LexAfterModuleImport(Token &Result) {
   if (ModuleImportPath.empty() && getLangOpts().CPlusPlusModules) {
     if (LexHeaderName(Result))
       return true;
+
+    if (Result.is(tok::colon) && ModuleDeclState.isNamedModule()) {
+      std::string Name = ModuleDeclState.getPrimaryName().str();
+      Name += ":";
+      ModuleImportPath.push_back({getIdentifierInfo(Name),
+                                  Result.getLocation()});
+      CurLexerKind = CLK_LexAfterModuleImport;
+      return true;
+    }
   } else {
     Lex(Result);
   }
@@ -1163,9 +1188,10 @@ bool Preprocessor::LexAfterModuleImport(Token &Result) {
                      /*DisableMacroExpansion*/ true, /*IsReinject*/ false);
   };
 
+  bool ImportingHeader = Result.is(tok::header_name);
   // Check for a header-name.
   SmallVector<Token, 32> Suffix;
-  if (Result.is(tok::header_name)) {
+  if (ImportingHeader) {
     // Enter the header-name token into the token stream; a Lex action cannot
     // both return a token and cache tokens (doing so would corrupt the token
     // cache if the call to Lex comes from CachingLex / PeekAhead).
@@ -1284,18 +1310,21 @@ bool Preprocessor::LexAfterModuleImport(Token &Result) {
   std::string FlatModuleName;
   if (getLangOpts().ModulesTS || getLangOpts().CPlusPlusModules) {
     for (auto &Piece : ModuleImportPath) {
-      if (!FlatModuleName.empty())
+      // If the FlatModuleName ends with comma, it implies it is a partition.
+      if (!FlatModuleName.empty() && FlatModuleName.back() != ':')
         FlatModuleName += ".";
       FlatModuleName += Piece.first->getName();
     }
     SourceLocation FirstPathLoc = ModuleImportPath[0].second;
     ModuleImportPath.clear();
+    IsAtImport = false;
     ModuleImportPath.push_back(
         std::make_pair(getIdentifierInfo(FlatModuleName), FirstPathLoc));
   }
 
   Module *Imported = nullptr;
-  if (getLangOpts().Modules) {
+  // When we're importing Standard C++ Named modules, we don't need to load it now.
+  if (getLangOpts().Modules && !isImportingCXXNamedModules()) {
     Imported = TheModuleLoader.loadModule(ModuleImportLoc,
                                           ModuleImportPath,
                                           Module::Hidden,

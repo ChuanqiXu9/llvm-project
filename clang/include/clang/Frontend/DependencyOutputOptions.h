@@ -28,6 +28,9 @@ enum ExtraDepKind {
   EDK_DepFileEntry,
 };
 
+/// StdCXXModuleDependencyFormat - Format for the std cxx module dependency file.
+enum class StdCXXModuleDependencyFormat { None, Trtbd };
+
 /// DependencyOutputOptions - Options for controlling the compiler dependency
 /// file generation.
 class DependencyOutputOptions {
@@ -75,6 +78,9 @@ public:
 
   /// The directory to copy module dependencies to when collecting them.
   std::string ModuleDependencyOutputDir;
+
+    /// The format for the module dependency file.
+  StdCXXModuleDependencyFormat StdModuleDepFormat = StdCXXModuleDependencyFormat::None;
 
 public:
   DependencyOutputOptions()

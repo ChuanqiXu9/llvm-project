@@ -61,6 +61,24 @@ struct ModuleID {
   }
 };
 
+struct StdCXXModuleInfo {
+  enum class ModuleType {
+    Named,
+    AngleHeader,
+    QuoteHeader
+  };
+  std::string Name;
+  std::string SourcePath;
+  bool IsInterface = true;
+  ModuleType Type;
+};
+
+struct P1689Rule {
+  std::string PrimaryOutput;
+  llvm::Optional<StdCXXModuleInfo> Provides;
+  std::vector<StdCXXModuleInfo> Requires;
+};
+
 /// An output from a module compilation, such as the path of the module file.
 enum class ModuleOutputKind {
   /// The module file (.pcm). Required.
@@ -221,6 +239,10 @@ private:
   /// Whether to set up command-lines to load PCM files eagerly.
   bool EagerLoadModules;
 
+  llvm::Optional<StdCXXModuleInfo> Provide;
+  std::vector<StdCXXModuleInfo> Requires;
+
+  bool isP1689Format() const;
   /// Checks whether the module is known as being prebuilt.
   bool isPrebuiltModule(const Module *M);
 
