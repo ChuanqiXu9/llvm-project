@@ -20,5 +20,5 @@ target_sources(simple
 
 
 # I don't know how to spcify "${CMAKE_BINARY_DIR}/CMakeFiles/simple.dir" properly
-SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -fmodules-cache-path=${CMAKE_BINARY_DIR}/CMakeFiles/simple.dir")
+SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -fc++-modules-cache-path=${CMAKE_BINARY_DIR}/CMakeFiles/simple.dir")
 target_compile_features(simple PUBLIC cxx_std_20)

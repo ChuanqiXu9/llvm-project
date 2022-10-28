@@ -1,14 +1,14 @@
 [
-    {
-      "directory": ".",
-      "command": "clang++  -fmodules-cache-path=./CMakeFiles/simple.dir -std=c++2a -o CMakeFiles/simple.dir/main.cpp.o -c main.cpp",
-      "file": "main.cpp",
-      "output": "build/CMakeFiles/simple.dir/main.cpp.o"
-    },
-    {
-      "directory": ".",
-      "command": "clang++  -fmodules-cache-path=./CMakeFiles/simple.dir -std=c++2a -o CMakeFiles/simple.dir/importable.cppm.o -c importable.cppm",
-      "file": "importable.cppm",
-      "output": "build/CMakeFiles/simple.dir/importable.cppm.o"
-    }
+  {
+    "directory": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/build",
+    "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++  -fmodules-cache-path=/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/build/CMakeFiles/simple.dir -std=c++20 -o CMakeFiles/simple.dir/main.cpp.o -c /home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/main.cpp",
+    "file": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/main.cpp",
+    "output": "CMakeFiles/simple.dir/main.cpp.o"
+  },
+  {
+    "directory": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/build",
+    "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++  -fmodules-cache-path=/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/build/CMakeFiles/simple.dir -std=c++20 -o CMakeFiles/simple.dir/importable.cppm.o -c /home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/importable.cppm",
+    "file": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/Simple/importable.cppm",
+    "output": "CMakeFiles/simple.dir/importable.cppm.o"
+  }
 ]

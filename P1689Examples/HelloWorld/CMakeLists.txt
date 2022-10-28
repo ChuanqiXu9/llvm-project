@@ -19,5 +19,5 @@ target_sources(Hello
         Hello.cppm Hello-impl_part.cppm Hello-interface_part.cppm)
 
 # I don't know how to spcify "${CMAKE_BINARY_DIR}/CMakeFiles/Hello.dir" properly
-SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -fmodules-cache-path=${CMAKE_BINARY_DIR}/CMakeFiles/Hello.dir")
+SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -fc++-modules-cache-path=${CMAKE_BINARY_DIR}/CMakeFiles/Hello.dir")
 target_compile_features(Hello PUBLIC cxx_std_20)

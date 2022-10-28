@@ -1,32 +1,32 @@
 [
     {
-        "directory": ".",
-        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Hello.cppm",
-        "file": "Hello.cppm",
-        "output": "Hello.o"
+      "directory": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build",
+      "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++  -fmodules-cache-path=/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build/CMakeFiles/Hello.dir -std=c++20 -o CMakeFiles/Hello.dir/Use.cpp.o -c /home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Use.cpp",
+      "file": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Use.cpp",
+      "output": "CMakeFiles/Hello.dir/Use.cpp.o"
     },
     {
-        "directory": ".",
-        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Hello-impl_part.cppm",
-        "file": "Hello-impl_part.cppm",
-        "output": "Hello-impl_part.o"
+      "directory": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build",
+      "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++  -fmodules-cache-path=/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build/CMakeFiles/Hello.dir -std=c++20 -o CMakeFiles/Hello.dir/Impl.cpp.o -c /home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Impl.cpp",
+      "file": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Impl.cpp",
+      "output": "CMakeFiles/Hello.dir/Impl.cpp.o"
     },
     {
-        "directory": ".",
-        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Hello-interface_part.cppm",
-        "file": "Hello-interface_part.cppm",
-        "output": "Hello-interface_part.o"
+      "directory": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build",
+      "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++  -fmodules-cache-path=/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build/CMakeFiles/Hello.dir -std=c++20 -o CMakeFiles/Hello.dir/Hello.cppm.o -c /home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Hello.cppm",
+      "file": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Hello.cppm",
+      "output": "CMakeFiles/Hello.dir/Hello.cppm.o"
     },
     {
-        "directory": ".",
-        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Impl.cpp",
-        "file": "Impl.cpp",
-        "output": "Impl.o"
+      "directory": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build",
+      "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++  -fmodules-cache-path=/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build/CMakeFiles/Hello.dir -std=c++20 -o CMakeFiles/Hello.dir/Hello-impl_part.cppm.o -c /home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Hello-impl_part.cppm",
+      "file": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Hello-impl_part.cppm",
+      "output": "CMakeFiles/Hello.dir/Hello-impl_part.cppm.o"
     },
     {
-        "directory": ".",
-        "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++ -std=c++20 -E Use.cpp",
-        "file": "Use.cpp",
-        "output": "Use.o"
+      "directory": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build",
+      "command": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/build/bin/clang++  -fmodules-cache-path=/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/build/CMakeFiles/Hello.dir -std=c++20 -o CMakeFiles/Hello.dir/Hello-interface_part.cppm.o -c /home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Hello-interface_part.cppm",
+      "file": "/home/chuanqi.xcq/workspace.xuchuanqi/llvm-project-for-work/P1689Examples/HelloWorld/Hello-interface_part.cppm",
+      "output": "CMakeFiles/Hello.dir/Hello-interface_part.cppm.o"
     }
 ]
