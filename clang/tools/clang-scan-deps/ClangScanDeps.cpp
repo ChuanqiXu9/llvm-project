@@ -174,6 +174,12 @@ llvm::cl::opt<std::string> ModuleName(
     llvm::cl::desc("the module of which the dependencies are to be computed"),
     llvm::cl::cat(DependencyScannerCategory));
 
+llvm::cl::opt<std::string> TargetedFileName(
+  "targeted-file-name", llvm::cl::Optional,
+  llvm::cl::desc("Only supported P1689, the targeted file name of which the dependencies are to be computed."),
+  llvm::cl::cat(DependencyScannerCategory)
+);
+
 llvm::cl::list<std::string> ModuleDepTargets(
     "dependency-target",
     llvm::cl::desc("The names of dependency targets for the dependency file"),
@@ -627,7 +633,9 @@ int main(int argc, const char **argv) {
     WorkerTools.push_back(std::make_unique<DependencyScanningTool>(Service));
 
   std::vector<tooling::CompileCommand> Inputs =
-      AdjustingCompilations->getAllCompileCommands();
+      TargetedFileName.empty() ?
+      AdjustingCompilations->getAllCompileCommands() :
+      AdjustingCompilations->getCompileCommands(TargetedFileName);
 
   std::atomic<bool> HadErrors(false);
   FullDeps FD;
