@@ -15,7 +15,7 @@ Command line option
 ```
 CC=clang CXX=clang++ cmake -DCMake_TEST_MODULE_COMPILATION=named,partitions,internal_partitions \
 -DCMake_TEST_MODULE_COMPILATION_RULES=cxx_modules_rules_clang.cmake \
--DCMake_TEST_HOST_CMAKE=ON -S . -B build -GNinja
+-DCMake_TEST_HOST_CMAKE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -S . -B build -GNinja
 
 cd build
 ninja -v

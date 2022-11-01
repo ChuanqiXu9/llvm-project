@@ -8,7 +8,7 @@ set(CMAKE_EXPERIMENTAL_CXX_MODULE_DYNDEP 1)
 #  " -fdep-file=<DYNDEP_FILE> -fdep-output=<OBJECT> -fdep-format=trtbd"
 #  " -o <PREPROCESSED_SOURCE>")
 string(CONCAT CMAKE_EXPERIMENTAL_CXX_SCANDEP_SOURCE
-  "clang-scan-deps --compilation-database=${CMAKE_SOURCE_DIR}/compile_commands.json -targeted-file-name=<SOURCE> "
+  "clang-scan-deps --compilation-database=compile_commands.json -targeted-file-name=<SOURCE> "
   "--format=p1689 > <DYNDEP_FILE>")
 set(CMAKE_EXPERIMENTAL_CXX_MODULE_MAP_FORMAT "clang")
 set(CMAKE_EXPERIMENTAL_CXX_MODULE_MAP_FLAG "@<MODULE_MAP_FILE>")
