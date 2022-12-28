@@ -922,6 +922,7 @@ endfunction()
 add_subdirectory(include)
 add_subdirectory(src)
 add_subdirectory(utils)
+add_subdirectory(stdmodules)
 
 set(LIBCXX_TEST_DEPS "cxx_experimental")
 
