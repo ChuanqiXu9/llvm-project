@@ -20,11 +20,16 @@
 // FIXME: How to get a better name than `%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/`?
 // ADDITIONAL_COMPILE_FLAGS: -fprebuilt-module-path=%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/ -lstd_modules
 
+#ifdef TEST_MODULES
+import std;
+#else
+#  include <coroutine>
+#  include <type_traits>
+#endif
 #include <cassert>
+#include "test_macros.h"
 // For std::nullptr_t. We're not intentioned to implement std.comp yet.
 #include <cstddef>
-#include "test_macros.h"
-import std;
 
 template <class C>
 constexpr bool do_test() {

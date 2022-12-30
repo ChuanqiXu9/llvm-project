@@ -104,6 +104,10 @@ option(LIBCXX_ENABLE_VENDOR_AVAILABILITY_ANNOTATIONS
    the shared library they shipped should turn this on and see `include/__availability`
    for more details." OFF)
 option(LIBCXX_ENABLE_CLANG_TIDY "Whether to compile and run clang-tidy checks" OFF)
+option(LIBCXX_ENABLE_STD_MODULE
+   "Whether to enable the building the C++23 std module. This feature is experimental
+    and far from usable. Only enable this when interested in testing and developing
+	this module." OFF)
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set(LIBCXX_DEFAULT_TEST_CONFIG "llvm-libc++-shared-gcc.cfg.in")
@@ -922,7 +926,9 @@ endfunction()
 add_subdirectory(include)
 add_subdirectory(src)
 add_subdirectory(utils)
-add_subdirectory(stdmodules)
+if (LIBCXX_ENABLE_STD_MODULE)
+  add_subdirectory(stdmodules)
+endif()
 
 set(LIBCXX_TEST_DEPS "cxx_experimental")
 
@@ -932,6 +938,10 @@ endif()
 
 if (LIBCXX_ENABLE_CLANG_TIDY)
   list(APPEND LIBCXX_TEST_DEPS cxx-tidy)
+endif()
+
+if (LIBCXX_ENABLE_STD_MODULE)
+  list(APPEND LIBCXX_TEST_DEPS std)
 endif()
 
 if (LIBCXX_INCLUDE_BENCHMARKS)

@@ -16,12 +16,14 @@
 
 // exception_ptr current_exception();
 
-// FIXME: How to get a better name than `%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/`?
-// ADDITIONAL_COMPILE_FLAGS: -fprebuilt-module-path=%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/ -lstd_modules
-
+#ifdef TEST_MODULES
+import std;
+#else
+#  include <coroutine>
+#  include <exception>
+#endif
 #include <cassert>
 #include "test_macros.h"
-import std;
 
 struct A
 {

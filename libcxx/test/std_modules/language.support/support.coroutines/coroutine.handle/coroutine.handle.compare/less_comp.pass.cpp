@@ -16,12 +16,14 @@
 
 // constexpr strong_ordering operator<=>(coroutine_handle<> x, coroutine_handle<> y) noexcept;
 
-// FIXME: How to get a better name than `%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/`?
-// ADDITIONAL_COMPILE_FLAGS: -fprebuilt-module-path=%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/ -lstd_modules
-
+#ifdef TEST_MODULES
+import std;
+#else
+#  include <coroutine>
+#  include <utility>
+#endif
 #include <cassert>
 #include "test_macros.h"
-import std;
 
 template <class C>
 void do_test(int *LHSVal, int *RHSVal) {

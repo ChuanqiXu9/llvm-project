@@ -9,12 +9,13 @@
 // UNSUPPORTED: c++03, c++11, c++14, c++17, c++20
 // UNSUPPORTED: libcpp-no-coroutines
 
-// FIXME: How to get a better name than `%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/`?
-// ADDITIONAL_COMPILE_FLAGS: -fprebuilt-module-path=%{lib}/../../runtimes/runtimes-bins/libcxx/stdmodules/ -lstd_modules
-
+#ifdef TEST_MODULES
+import std;
+#else
+#  include <coroutine>
+#endif
 #include <cassert>
 #include "test_macros.h"
-import std;
 
 struct coro_t {
   struct promise_type {
@@ -33,21 +34,20 @@ struct B {
   ~B() {}
   bool await_ready() { return true; }
   B await_resume() { return {}; }
-  template <typename F> void await_suspend(F) {}
+  template <typename F>
+  void await_suspend(F) {}
 };
-
 
 struct A {
   ~A() {}
   bool await_ready() { return true; }
   int await_resume() { return 42; }
-  template <typename F> void await_suspend(F) {}
+  template <typename F>
+  void await_suspend(F) {}
 };
 
 int last_value = -1;
-void set_value(int x) {
-  last_value = x;
-}
+void set_value(int x) { last_value = x; }
 
 coro_t f(int n) {
   if (n == 0) {

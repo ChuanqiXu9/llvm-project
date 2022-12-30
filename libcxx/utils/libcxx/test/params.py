@@ -67,6 +67,21 @@ def getStdFlag(cfg, std):
     return '-std='+fallbacks[std]
   return None
 
+_allModules = ['none', 'clang', 'c++']
+def getModuleFlag(cfg, enable_modules):
+  # Originaly the flag was a Boolean, this maps the original Boolean values
+  # to the new enumerate values.
+  fallbacks = {
+    'none': 'False',
+    'clang': 'True',
+  }
+  if enable_modules in _allModules:
+    return enable_modules
+  if enable_modules in fallbacks:
+    return fallbacks[enable_modules]
+  return None
+
+
 DEFAULT_PARAMETERS = [
   Parameter(name='target_triple', type=str,
             help="The target triple to compile the test suite for. This must be "
@@ -86,13 +101,27 @@ DEFAULT_PARAMETERS = [
               AddCompileFlag(lambda cfg: getStdFlag(cfg, std)),
             ]),
 
-  Parameter(name='enable_modules', choices=[True, False], type=bool, default=False,
-            help="Whether to build the test suite with Clang modules enabled.",
-            actions=lambda modules: [
+  Parameter(name='enable_modules', choices=_allModules + ['True', 'False'], type=str,
+            help="Whether to build the test suite with modules enabled. Select "
+                 "Clang for Clang modules and c++ for C++ Standard modules",
+            default=lambda cfg: next(s for s in _allModules if getModuleFlag(cfg, s)),
+            actions=lambda enable_modules: [
               AddFeature('modules-build'),
               AddCompileFlag('-fmodules'),
               AddCompileFlag('-fcxx-modules'), # AppleClang disregards -fmodules entirely when compiling C++. This enables modules for C++.
-            ] if modules else []),
+            ] if enable_modules == "clang" or enable_modules == "True" else [
+              AddCompileFlag(lambda cfg: '-fprebuilt-module-path=' + os.path.join(cfg.test_exec_root, '../libcxx/modules')),
+              # Flag to indicate we want to import std instead of library headers.
+              AddCompileFlag('-DTEST_MODULES'),
+              # The list of all modules needed to be imported.
+              # TODO avoid this duplication.
+              AddLinkFlag(lambda cfg: os.path.join(cfg.test_exec_root, '../libcxx/modules/') + 'std.pcm'),
+              AddLinkFlag(lambda cfg: os.path.join(cfg.test_exec_root, '../libcxx/modules/') + 'std-coroutine.pcm'),
+              AddLinkFlag(lambda cfg: os.path.join(cfg.test_exec_root, '../libcxx/modules/') + 'std-exception.pcm'),
+              AddLinkFlag(lambda cfg: os.path.join(cfg.test_exec_root, '../libcxx/modules/') + 'std-vector.pcm'),
+              AddLinkFlag(lambda cfg: os.path.join(cfg.test_exec_root, '../libcxx/modules/') + 'std-utility.pcm'),
+              AddLinkFlag(lambda cfg: os.path.join(cfg.test_exec_root, '../libcxx/modules/') + 'std-type_traits.pcm'),
+            ] if enable_modules == "c++" else []),
 
   Parameter(name='enable_exceptions', choices=[True, False], type=bool, default=True,
             help="Whether to enable exceptions when compiling the test suite.",

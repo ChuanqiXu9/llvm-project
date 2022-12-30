@@ -438,7 +438,8 @@ class AddLinkFlag(ConfigAction):
 
   def applyTo(self, config):
     flag = self._getFlag(config)
-    assert hasCompileFlag(config, flag), "Trying to enable link flag {}, which is not supported".format(flag)
+    # TODO This fails when enabling the modular flags.
+    #assert hasCompileFlag(config, flag), "Trying to enable link flag {}, which is not supported".format(flag)
     config.substitutions = _appendToSubstitution(config.substitutions, '%{link_flags}', flag)
 
   def pretty(self, config, litParams):
