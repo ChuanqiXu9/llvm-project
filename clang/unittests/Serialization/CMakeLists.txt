@@ -11,6 +11,7 @@ add_clang_unittest(SerializationTests
   ModuleCacheTest.cpp
   NoCommentsTest.cpp
   SourceLocationEncodingTest.cpp
+  ThinBMIDeclsHashTest.cpp
   VarDeclConstantInitTest.cpp
   )
 

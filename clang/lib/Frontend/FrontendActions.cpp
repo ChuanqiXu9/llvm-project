@@ -184,12 +184,12 @@ bool GeneratePCHAction::BeginSourceFileAction(CompilerInstance &CI) {
   return true;
 }
 
-std::unique_ptr<ASTConsumer>
-GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
-                                        StringRef InFile) {
+std::vector<std::unique_ptr<ASTConsumer>>
+GenerateModuleAction::CreateMultiplexConsumer(CompilerInstance &CI,
+                                              StringRef InFile) {
   std::unique_ptr<raw_pwrite_stream> OS = CreateOutputFile(CI, InFile);
   if (!OS)
-    return nullptr;
+    return {};
 
   std::string OutputFile = CI.getFrontendOpts().OutputFile;
   std::string Sysroot;
@@ -210,6 +210,17 @@ GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
       +CI.getFrontendOpts().BuildingImplicitModule));
   Consumers.push_back(CI.getPCHContainerWriter().CreatePCHContainerGenerator(
       CI, std::string(InFile), OutputFile, std::move(OS), Buffer));
+  return std::move(Consumers);
+}
+
+std::unique_ptr<ASTConsumer>
+GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
+                                        StringRef InFile) {
+  std::vector<std::unique_ptr<ASTConsumer>> Consumers =
+      CreateMultiplexConsumer(CI, InFile);
+  if (Consumers.empty())
+    return nullptr;
+
   return std::make_unique<MultiplexConsumer>(std::move(Consumers));
 }
 
@@ -262,6 +273,53 @@ std::unique_ptr<raw_pwrite_stream>
 GenerateModuleInterfaceAction::CreateOutputFile(CompilerInstance &CI,
                                                 StringRef InFile) {
   return CI.createDefaultOutputFile(/*Binary=*/true, InFile, "pcm");
+}
+
+static std::optional<uint64_t> tryGetBMIHash(CompilerInstance &CI,
+                                             StringRef Filename) {
+  // If the BMI specified is not acceptable (possible if the compiler version
+  // mismatched or the compile flags mismatched), return std::nullopt quickly.
+  if (!ASTReader::isAcceptableASTFile(Filename, CI.getFileManager(), CI.getModuleCache(),
+                                      CI.getPCHContainerReader(), CI.getLangOpts(),
+                                      CI.getTargetOpts(), CI.getPreprocessorOpts(),
+                                      /*ExistingModuleCachePath=*/StringRef()))
+    return std::nullopt;
+
+  // FIXME: It looks not efficient to read the specified BMI twice, let's merge
+  // the logic in an NFC patch.
+  return ASTReader::getBMIHash(Filename, CI.getFileManager());
+}
+
+static std::unique_ptr<ASTConsumer>
+CreateThinBMIGenerator(CompilerInstance &CI, StringRef OutputFile) {
+  auto Buffer = std::make_shared<PCHBuffer>();
+  // We don't have modules extension in Named mdoules.
+  llvm::SmallVector<std::shared_ptr<ModuleFileExtension>, 1> ModulesExtensions;
+  return std::make_unique<ThinBMIGenerator>(
+      CI.getPreprocessor(), CI.getModuleCache(), OutputFile, Buffer,
+      ModulesExtensions, tryGetBMIHash(CI, OutputFile),
+      /*IncludeTimestamps=*/+CI.getFrontendOpts().IncludeTimestamps);
+}
+
+std::unique_ptr<ASTConsumer>
+GenerateModuleInterfaceAction::CreateASTConsumer(CompilerInstance &CI,
+                                                 StringRef InFile) {
+  std::vector<std::unique_ptr<ASTConsumer>> Consumers =
+      CreateMultiplexConsumer(CI, InFile);
+  if (Consumers.empty())
+    return nullptr;
+
+  if (!CI.getFrontendOpts().ThinBMIPath.empty())
+    Consumers.push_back(
+        CreateThinBMIGenerator(CI, CI.getFrontendOpts().ThinBMIPath));
+
+  return std::make_unique<MultiplexConsumer>(std::move(Consumers));
+}
+
+std::unique_ptr<ASTConsumer>
+GenerateThinModuleInterfaceAction::CreateASTConsumer(CompilerInstance &CI,
+                                                     StringRef InFile) {
+  return CreateThinBMIGenerator(CI, CI.getFrontendOpts().OutputFile);
 }
 
 bool GenerateHeaderUnitAction::BeginSourceFileAction(CompilerInstance &CI) {
@@ -830,11 +888,16 @@ void DumpModuleInfoAction::ExecuteAction() {
 
   const LangOptions &LO = getCurrentASTUnit().getLangOpts();
   if (LO.CPlusPlusModules && !LO.CurrentModule.empty()) {
-
     ASTReader *R = getCurrentASTUnit().getASTReader().get();
     unsigned SubModuleCount = R->getTotalNumSubmodules();
     serialization::ModuleFile &MF = R->getModuleManager().getPrimaryModule();
     Out << "  ====== C++20 Module structure ======\n";
+
+    std::optional<uint64_t> DeclsHash = R->getReadedBMIHash();
+    if (DeclsHash) {
+      Out << "  Decls Hash: ";
+      Out.write_hex(*DeclsHash) << "\n";
+    }
 
     if (MF.ModuleName != LO.CurrentModule)
       Out << "  Mismatched module names : " << MF.ModuleName << " and "

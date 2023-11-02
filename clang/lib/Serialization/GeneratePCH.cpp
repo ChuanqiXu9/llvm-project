@@ -12,9 +12,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/AST/ASTContext.h"
+#include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/SemaConsumer.h"
+#include "clang/Serialization/ASTReader.h"
 #include "clang/Serialization/ASTWriter.h"
 #include "llvm/Bitstream/BitstreamWriter.h"
 
@@ -25,11 +27,12 @@ PCHGenerator::PCHGenerator(
     StringRef OutputFile, StringRef isysroot, std::shared_ptr<PCHBuffer> Buffer,
     ArrayRef<std::shared_ptr<ModuleFileExtension>> Extensions,
     bool AllowASTWithErrors, bool IncludeTimestamps,
-    bool BuildingImplicitModule, bool ShouldCacheASTInMemory)
+    bool BuildingImplicitModule, bool ShouldCacheASTInMemory,
+    bool GeneratingThinBMI)
     : PP(PP), OutputFile(OutputFile), isysroot(isysroot.str()),
       SemaPtr(nullptr), Buffer(std::move(Buffer)), Stream(this->Buffer->Data),
       Writer(Stream, this->Buffer->Data, ModuleCache, Extensions,
-             IncludeTimestamps, BuildingImplicitModule),
+             IncludeTimestamps, BuildingImplicitModule, GeneratingThinBMI),
       AllowASTWithErrors(AllowASTWithErrors),
       ShouldCacheASTInMemory(ShouldCacheASTInMemory) {
   this->Buffer->IsComplete = false;
@@ -77,4 +80,40 @@ ASTMutationListener *PCHGenerator::GetASTMutationListener() {
 
 ASTDeserializationListener *PCHGenerator::GetASTDeserializationListener() {
   return &Writer;
+}
+
+ThinBMIGenerator::ThinBMIGenerator(
+    const Preprocessor &PP, InMemoryModuleCache &ModuleCache,
+    StringRef OutputFile, std::shared_ptr<PCHBuffer> Buffer,
+    ArrayRef<std::shared_ptr<ModuleFileExtension>> Extensions,
+    std::optional<uint64_t> hash_value, bool IncludeTimestamps)
+    : PCHGenerator(
+          PP, ModuleCache, OutputFile, llvm::StringRef(), Buffer, Extensions,
+          /*AllowASTWithErrors*/ false, /*IncludeTimestamps=*/IncludeTimestamps,
+          /*BuildingImplicitModule=*/false, /*ShouldCacheASTInMemory=*/false,
+          /*GeneratingThinBMI=*/true),
+      existing_hash_value(hash_value) {}
+
+void ThinBMIGenerator::HandleTranslationUnit(ASTContext &Ctx) {
+  PCHGenerator::HandleTranslationUnit(Ctx);
+
+  if (!isComplete())
+    return;
+
+  if (existing_hash_value && getEmittedDeclsHash() == *existing_hash_value) {
+    // FIXME: How should we log this properly?
+    // llvm::errs() << getOutputFile() << " is not changed. Return quickly.\n";
+    return;
+  }
+
+  std::error_code EC;
+  auto OS = std::make_unique<llvm::raw_fd_ostream>(getOutputFile(), EC);
+  if (EC) {
+    getDiagnostics().Report(diag::err_fe_unable_to_open_output)
+        << getOutputFile() << EC.message() << "\n";
+    return;
+  }
+
+  *OS << getBufferPtr()->Data;
+  OS->flush();
 }
