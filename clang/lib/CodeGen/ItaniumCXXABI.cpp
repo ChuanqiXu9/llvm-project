@@ -1801,6 +1801,12 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   if (VTable->hasInitializer())
     return;
 
+  // If the class are attached to a C++ named module other than the one
+  // we're currently compiling, the vtable should be defined there.
+  if (Module *M = RD->getOwningModule();
+      M && M->isNamedModule() && M != CGM.getContext().getCurrentNamedModule())
+    return;
+
   ItaniumVTableContext &VTContext = CGM.getItaniumVTableContext();
   const VTableLayout &VTLayout = VTContext.getVTableLayout(RD);
   llvm::GlobalVariable::LinkageTypes Linkage = CGM.getVTableLinkage(RD);
