@@ -1223,6 +1223,38 @@ void ASTDeclContextNameLookupTrait::ReadDataInto(internal_key_type,
   }
 }
 
+ModuleFile *SpecializedDeclLookupTrait::ReadFileRef(const unsigned char *&d) {
+  using namespace llvm::support;
+
+  uint32_t ModuleFileID =
+      endian::readNext<uint32_t, llvm::endianness::little, unaligned>(d);
+  return Reader.getLocalModuleFile(F, ModuleFileID);
+}
+
+SpecializedDeclLookupTrait::internal_key_type
+SpecializedDeclLookupTrait::ReadKey(const unsigned char *d, unsigned) {
+  using namespace llvm::support;
+  return endian::readNext<uint32_t, llvm::endianness::little, unaligned>(d);
+}
+
+std::pair<unsigned, unsigned>
+SpecializedDeclLookupTrait::ReadKeyDataLength(const unsigned char *&d) {
+  return readULEBKeyDataLength(d);
+}
+
+void SpecializedDeclLookupTrait::ReadDataInto(internal_key_type,
+                                              const unsigned char *d,
+                                              unsigned DataLen,
+                                              data_type_builder &Val) {
+  using namespace llvm::support;
+
+  for (unsigned NumDecls = DataLen / 4; NumDecls; --NumDecls) {
+    uint32_t LocalID =
+        endian::readNext<uint32_t, llvm::endianness::little, unaligned>(d);
+    Val.insert(Reader.getGlobalDeclID(F, LocalID));
+  }
+}
+
 bool ASTReader::ReadLexicalDeclContextStorage(ModuleFile &M,
                                               BitstreamCursor &Cursor,
                                               uint64_t Offset,
@@ -1309,6 +1341,44 @@ bool ASTReader::ReadVisibleDeclContextStorage(ModuleFile &M,
   // lookup table until we're done with recursive deserialization.
   auto *Data = (const unsigned char*)Blob.data();
   PendingVisibleUpdates[ID].push_back(PendingVisibleUpdate{&M, Data});
+  return false;
+}
+
+bool ASTReader::ReadDeclsSpecs(ModuleFile &M, BitstreamCursor &Cursor,
+                               uint64_t Offset, Decl *D) {
+  assert(Offset != 0);
+
+  SavedStreamPosition SavedPosition(Cursor);
+  if (llvm::Error Err = Cursor.JumpToBit(Offset)) {
+    Error(std::move(Err));
+    return true;
+  }
+
+  RecordData Record;
+  StringRef Blob;
+  Expected<unsigned> MaybeCode = Cursor.ReadCode();
+  if (!MaybeCode) {
+    Error(MaybeCode.takeError());
+    return true;
+  }
+  unsigned Code = MaybeCode.get();
+
+  Expected<unsigned> MaybeRecCode = Cursor.readRecord(Code, Record, &Blob);
+  if (!MaybeRecCode) {
+    Error(MaybeRecCode.takeError());
+    return true;
+  }
+  unsigned RecCode = MaybeRecCode.get();
+  if (RecCode != DECL_SPECS) {
+    Error("Expected decl specs block");
+    return true;
+  }
+
+  auto *Data = (const unsigned char *)Blob.data();
+  D = D->getCanonicalDecl();
+  SpecLookups[D].Table.add(&M, Data,
+                           reader::SpecializedDeclLookupTrait(*this, M));
+
   return false;
 }
 
@@ -7523,13 +7593,13 @@ void ASTReader::CompleteRedeclChain(const Decl *D) {
   }
 
   if (auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(D))
-    CTSD->getSpecializedTemplate()->LoadLazySpecializations();
+    const_cast<ClassTemplateSpecializationDecl *>(CTSD)->loadExternalRedecls();
   if (auto *VTSD = dyn_cast<VarTemplateSpecializationDecl>(D))
-    VTSD->getSpecializedTemplate()->LoadLazySpecializations();
-  if (auto *FD = dyn_cast<FunctionDecl>(D)) {
-    if (auto *Template = FD->getPrimaryTemplate())
-      Template->LoadLazySpecializations();
-  }
+    const_cast<VarTemplateSpecializationDecl *>(VTSD)->loadExternalRedecls();
+  if (auto *FD = dyn_cast<FunctionDecl>(D))
+    if (auto *FDInfo = FD->getTemplateSpecializationInfo())
+      const_cast<FunctionTemplateSpecializationInfo *>(FDInfo)
+          ->loadExternalRedecls();
 }
 
 CXXCtorInitializer **
@@ -7958,6 +8028,26 @@ ASTReader::FindExternalVisibleDeclsByName(const DeclContext *DC,
   return !Decls.empty();
 }
 
+void ASTReader::LoadExternalSpecs(const Decl *D,
+                                  ArrayRef<TemplateArgument> TemplateArgs) {
+  assert(D);
+
+  auto It = SpecLookups.find(D);
+  if (It == SpecLookups.end())
+    return;
+
+  ODRHash Hasher;
+  Hasher.AddInteger(TemplateArgs.size());
+  for (const TemplateArgument &TemplateArg : TemplateArgs)
+    Hasher.AddTemplateArgument(TemplateArg);
+  auto HashValue = Hasher.CalculateHash();
+
+  Deserializing LookupResults(this);
+
+  for (DeclID ID : It->second.Table.find(HashValue))
+    GetDecl(ID);
+}
+
 void ASTReader::completeVisibleDeclsMap(const DeclContext *DC) {
   if (!DC->hasExternalVisibleStorage())
     return;
@@ -7985,6 +8075,13 @@ const serialization::reader::DeclContextLookupTable *
 ASTReader::getLoadedLookupTables(DeclContext *Primary) const {
   auto I = Lookups.find(Primary);
   return I == Lookups.end() ? nullptr : &I->second;
+}
+
+serialization::reader::SpecializedDeclsLookupTable *
+ASTReader::getLoadedSpecLookupTables(Decl *D) {
+  assert(D->isCanonicalDecl());
+  auto I = SpecLookups.find(D);
+  return I == SpecLookups.end() ? nullptr : &I->second;
 }
 
 /// Under non-PCH compilation the consumer receives the objc methods

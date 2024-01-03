@@ -340,6 +340,9 @@ class ASTIdentifierLookupTrait;
 /// The on-disk hash table(s) used for DeclContext name lookup.
 struct DeclContextLookupTable;
 
+/// The on-disk hash table(s) used for specialization decls.
+struct SpecializedDeclsLookupTable;
+
 } // namespace reader
 
 } // namespace serialization
@@ -599,6 +602,11 @@ private:
   llvm::DenseMap<const DeclContext *,
                  serialization::reader::DeclContextLookupTable> Lookups;
 
+  /// Map from decls to specialized decls.
+  llvm::DenseMap<const Decl *,
+                 serialization::reader::SpecializedDeclsLookupTable>
+      SpecLookups;
+
   // Updates for visible decls can occur for other contexts than just the
   // TU, and when we read those update records, the actual context may not
   // be available yet, so have this pending map using the ID as a key. It
@@ -639,6 +647,9 @@ private:
   bool ReadVisibleDeclContextStorage(ModuleFile &M,
                                      llvm::BitstreamCursor &Cursor,
                                      uint64_t Offset, serialization::DeclID ID);
+
+  bool ReadDeclsSpecs(ModuleFile &M, llvm::BitstreamCursor &Cursor,
+                      uint64_t Offset, Decl *D);
 
   /// A vector containing identifiers that have already been
   /// loaded.
@@ -1343,6 +1354,11 @@ public:
   const serialization::reader::DeclContextLookupTable *
   getLoadedLookupTables(DeclContext *Primary) const;
 
+  /// Get the loaded specializations lookup tables for \p D,
+  /// if any.
+  serialization::reader::SpecializedDeclsLookupTable *
+  getLoadedSpecLookupTables(Decl *D);
+
 private:
   struct ImportedModule {
     ModuleFile *Mod;
@@ -1981,6 +1997,9 @@ public:
   /// lookup table as unmaterialized references.
   bool FindExternalVisibleDeclsByName(const DeclContext *DC,
                                       DeclarationName Name) override;
+
+  void LoadExternalSpecs(const Decl *D,
+                         ArrayRef<TemplateArgument> TemplateArgs) override;
 
   /// Read all of the declarations lexically stored in a
   /// declaration context.

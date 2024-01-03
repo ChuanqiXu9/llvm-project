@@ -527,6 +527,10 @@ private:
   bool isLookupResultExternal(StoredDeclsList &Result, DeclContext *DC);
   bool isLookupResultEntirelyExternal(StoredDeclsList &Result, DeclContext *DC);
 
+  uint64_t
+  WriteSpecsLookupTable(NamedDecl *D,
+                        llvm::SmallVectorImpl<const NamedDecl *> &Specs);
+
   void GenerateNameLookupTable(const DeclContext *DC,
                                llvm::SmallVectorImpl<char> &LookupTable);
   uint64_t WriteDeclContextLexicalBlock(ASTContext &Context, DeclContext *DC);
@@ -564,6 +568,8 @@ private:
   unsigned DeclEnumAbbrev = 0;
   unsigned DeclObjCIvarAbbrev = 0;
   unsigned DeclCXXMethodAbbrev = 0;
+  unsigned DeclSpecsAbbrev = 0;
+
   unsigned DeclDependentNonTemplateCXXMethodAbbrev = 0;
   unsigned DeclTemplateCXXMethodAbbrev = 0;
   unsigned DeclMemberSpecializedCXXMethodAbbrev = 0;
