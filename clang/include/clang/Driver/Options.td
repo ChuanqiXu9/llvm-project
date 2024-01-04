@@ -2977,6 +2977,11 @@ def fmodule_output : Flag<["-"], "fmodule-output">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption, CC1Option]>,
   HelpText<"Save intermediate module file results when compiling a standard C++ module unit.">;
 
+defm gen_reduced_bmi : BoolFOption<"gen-reduced-bmi",
+  LangOpts<"GenReducedBMI">, DefaultFalse,
+  PosFlag<SetTrue, [], [CC1Option, ClangOption], "Generate reduced BMI.">,
+  NegFlag<SetFalse>, BothFlags<[], [ClangOption, CC1Option]>>;
+
 def fmodules_prune_interval : Joined<["-"], "fmodules-prune-interval=">, Group<i_Group>,
   Visibility<[ClangOption, CC1Option]>, MetaVarName<"<seconds>">,
   HelpText<"Specify the interval (in seconds) between attempts to prune the module cache">,

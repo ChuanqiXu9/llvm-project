@@ -3889,7 +3889,16 @@ static bool RenderModulesOptions(Compilation &C, const Driver &D,
 
   // Claim `-fmodule-output` and `-fmodule-output=` to avoid unused warnings.
   Args.ClaimAllArgs(options::OPT_fmodule_output);
-  Args.ClaimAllArgs(options::OPT_fmodule_output_EQ);
+  Args.AddLastArg(CmdArgs, options::OPT_fmodule_output_EQ);
+
+  if (Args.hasFlag(options::OPT_fgen_reduced_bmi,
+                   options::OPT_fno_gen_reduced_bmi, false)) {
+    if (Input.getType() != driver::types::TY_CXXModule &&
+        Input.getType() != driver::types::TY_PP_CXXModule)
+      D.Diag(diag::err_drv_incorrect_input_to_gen_reduced_bmi);
+
+    CmdArgs.push_back("-fgen-reduced-bmi");
+  }
 
   return HaveModules;
 }

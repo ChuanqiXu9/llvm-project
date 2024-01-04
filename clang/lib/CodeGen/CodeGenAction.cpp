@@ -26,7 +26,10 @@
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
+#include "clang/Frontend/FrontendActions.h"
+#include "clang/Frontend/MultiplexConsumer.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Serialization/ASTWriter.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/CodeGen/MachineOptimizationRemarkEmitter.h"
@@ -996,6 +999,12 @@ CodeGenerator *CodeGenAction::getCodeGenerator() const {
   return BEConsumer->getCodeGenerator();
 }
 
+bool CodeGenAction::BeginSourceFileAction(CompilerInstance &CI) {
+  if (CI.getLangOpts().GenReducedBMI)
+    CI.getLangOpts().setCompilingModule(LangOptions::CMK_ModuleInterface);
+  return true;
+}
+
 static std::unique_ptr<raw_pwrite_stream>
 GetOutputStream(CompilerInstance &CI, StringRef InFile, BackendAction Action) {
   switch (Action) {
@@ -1051,6 +1060,16 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
         std::make_unique<MacroPPCallbacks>(BEConsumer->getCodeGenerator(),
                                             CI.getPreprocessor());
     CI.getPreprocessor().addPPCallbacks(std::move(Callbacks));
+  }
+
+  if (CI.getLangOpts().GenReducedBMI && !CI.getFrontendOpts().ModuleOutputPath.empty()) {
+    std::vector<std::unique_ptr<ASTConsumer>> Consumers{2};
+    Consumers[0] = std::move(Result);
+    Consumers[1] = std::make_unique<ReducedBMIGenerator>(
+      CI.getPreprocessor(), CI.getModuleCache(),
+      CI.getFrontendOpts().OutputFile, std::make_shared<PCHBuffer>(),
+      /*IncludeTimestamps=*/+CI.getFrontendOpts().IncludeTimestamps);
+    return std::make_unique<MultiplexConsumer>(std::move(Consumers));
   }
 
   return std::move(Result);
