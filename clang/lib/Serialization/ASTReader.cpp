@@ -1344,6 +1344,12 @@ bool ASTReader::ReadVisibleDeclContextStorage(ModuleFile &M,
   return false;
 }
 
+void ASTReader::AddDeclSpecs(const Decl *D, const unsigned char *Data, ModuleFile &M) {
+  D = D->getCanonicalDecl();
+  SpecLookups[D].Table.add(&M, Data,
+                           reader::SpecializedDeclLookupTrait(*this, M));
+}
+
 bool ASTReader::ReadDeclsSpecs(ModuleFile &M, BitstreamCursor &Cursor,
                                uint64_t Offset, Decl *D) {
   assert(Offset != 0);
@@ -1375,10 +1381,7 @@ bool ASTReader::ReadDeclsSpecs(ModuleFile &M, BitstreamCursor &Cursor,
   }
 
   auto *Data = (const unsigned char *)Blob.data();
-  D = D->getCanonicalDecl();
-  SpecLookups[D].Table.add(&M, Data,
-                           reader::SpecializedDeclLookupTrait(*this, M));
-
+  AddDeclSpecs(D, Data, M);
   return false;
 }
 
@@ -3473,6 +3476,19 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       serialization::DeclID ID = ReadDeclID(F, Record, Idx);
       auto *Data = (const unsigned char*)Blob.data();
       PendingVisibleUpdates[ID].push_back(PendingVisibleUpdate{&F, Data});
+      // If we've already loaded the decl, perform the updates when we finish
+      // loading this block.
+      if (Decl *D = GetExistingDecl(ID))
+        PendingUpdateRecords.push_back(
+            PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+      break;
+    }
+
+    case UPDATE_SPECIALIZATION: {
+      unsigned Idx = 0;
+      serialization::DeclID ID = ReadDeclID(F, Record, Idx);
+      auto *Data = (const unsigned char*)Blob.data();
+      PendingSpecializationUpdates[ID].push_back(PendingVisibleUpdate{&F, Data});
       // If we've already loaded the decl, perform the updates when we finish
       // loading this block.
       if (Decl *D = GetExistingDecl(ID))
@@ -8078,7 +8094,7 @@ ASTReader::getLoadedLookupTables(DeclContext *Primary) const {
 }
 
 serialization::reader::SpecializedDeclsLookupTable *
-ASTReader::getLoadedSpecLookupTables(Decl *D) {
+ASTReader::getLoadedSpecLookupTables(const Decl *D) {
   assert(D->isCanonicalDecl());
   auto I = SpecLookups.find(D);
   return I == SpecLookups.end() ? nullptr : &I->second;

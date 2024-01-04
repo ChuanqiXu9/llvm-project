@@ -622,6 +622,10 @@ private:
   llvm::DenseMap<serialization::DeclID, DeclContextVisibleUpdates>
       PendingVisibleUpdates;
 
+  /// FIXME: We should rename PendingVisibleUpdate.
+  llvm::DenseMap<serialization::DeclID, DeclContextVisibleUpdates>
+      PendingSpecializationUpdates;
+
   /// The set of C++ or Objective-C classes that have forward
   /// declarations that have not yet been linked to their definitions.
   llvm::SmallPtrSet<Decl *, 4> PendingDefinitions;
@@ -650,6 +654,7 @@ private:
 
   bool ReadDeclsSpecs(ModuleFile &M, llvm::BitstreamCursor &Cursor,
                       uint64_t Offset, Decl *D);
+  void AddDeclSpecs(const Decl *D, const unsigned char *Data, ModuleFile &M);
 
   /// A vector containing identifiers that have already been
   /// loaded.
@@ -1357,7 +1362,7 @@ public:
   /// Get the loaded specializations lookup tables for \p D,
   /// if any.
   serialization::reader::SpecializedDeclsLookupTable *
-  getLoadedSpecLookupTables(Decl *D);
+  getLoadedSpecLookupTables(const Decl *D);
 
 private:
   struct ImportedModule {
