@@ -2253,7 +2253,10 @@ ASTDeclReader::VisitCXXRecordDeclImpl(CXXRecordDecl *D) {
 
   // Lazily load the key function to avoid deserializing every method so we can
   // compute it.
-  if (WasDefinition) {
+  //
+  // The key function in named module is meaningless.
+  if (WasDefinition && (!D->getOwningModule() || 
+                        !D->getOwningModule()->isInterfaceOrPartition())) {
     DeclID KeyFn = readDeclID();
     if (KeyFn && D->isCompleteDefinition())
       // FIXME: This is wrong for the ARM ABI, where some other module may have
@@ -3207,10 +3210,15 @@ static bool isConsumerInterestedIn(ASTContext &Ctx, Decl *D, bool HasBody) {
             OMPDeclareTargetDeclAttr::isDeclareTargetDeclaration(Var));
   if (const auto *Func = dyn_cast<FunctionDecl>(D))
     return Func->doesThisDeclarationHaveABody() || HasBody;
-
+  
   if (auto *ES = D->getASTContext().getExternalSource())
     if (ES->hasExternalDefinitions(D) == ExternalASTSource::EK_Never)
       return true;
+
+  if (const auto *Class = dyn_cast<CXXRecordDecl>(D))
+    return Class->getOwningModule() &&
+           Class->getOwningModule()->isInterfaceOrPartition() &&
+           Class->getDefinition() && Class->isDynamicClass();
 
   return false;
 }

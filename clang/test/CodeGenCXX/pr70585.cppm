@@ -17,17 +17,9 @@
 export module foo:layer1;
 struct Fruit {
     virtual ~Fruit() = default;
-    virtual void eval() = 0;
-};
-struct Banana : public Fruit {
-    Banana() {}
-    void eval() override;
+    virtual void eval();
 };
 
-// CHECK-DAG: @_ZTVW3foo6Banana = unnamed_addr constant
-// CHECK-DAG: @_ZTSW3foo6Banana = constant
-// CHECK-DAG: @_ZTIW3foo6Banana = constant
-//
 // CHECK-DAG: @_ZTVW3foo5Fruit = unnamed_addr constant
 // CHECK-DAG: @_ZTSW3foo5Fruit = constant
 // CHECK-DAG: @_ZTIW3foo5Fruit = constant
@@ -40,15 +32,10 @@ struct Banana : public Fruit {
 export module foo:layer2;
 import :layer1;
 export void layer2_fun() {
-    Banana *b = new Banana();
+    Fruit *b = new Fruit();
     b->eval();
 }
-void Banana::eval() {
-}
-
-// CHECK-NOT: @_ZTVW3foo6Banana
-// CHECK-NOT: @_ZTSW3foo6Banana
-// CHECK-NOT: @_ZTIW3foo6Banana
-// CHECK-NOT: @_ZTVW3foo5Fruit
+void Fruit::eval() {}
+// CHECK: @_ZTVW3foo5Fruit = external unnamed_addr constant
 // CHECK-NOT: @_ZTSW3foo5Fruit
 // CHECK-NOT: @_ZTIW3foo5Fruit

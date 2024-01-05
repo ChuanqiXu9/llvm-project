@@ -1482,11 +1482,16 @@ void ASTDeclWriter::VisitCXXRecordDecl(CXXRecordDecl *D) {
   Record.push_back(D->isThisDeclarationADefinition());
   if (D->isThisDeclarationADefinition())
     Record.AddCXXDefinitionData(D);
-
-  // Store (what we currently believe to be) the key function to avoid
-  // deserializing every method so we can compute it.
-  if (D->isCompleteDefinition())
-    Record.AddDeclRef(Context.getCurrentKeyFunction(D));
+  
+  if (D->isCompleteDefinition()) {
+    if (D->getOwningModule() && D->getOwningModule()->isInterfaceOrPartition())
+      Writer.ModularCodegenDecls.push_back(Writer.GetDeclRef(D));
+    else {
+      // Store (what we currently believe to be) the key function to avoid
+      // deserializing every method so we can compute it.
+      Record.AddDeclRef(Context.getCurrentKeyFunction(D));
+    }
+  }
 
   Code = serialization::DECL_CXX_RECORD;
 }
