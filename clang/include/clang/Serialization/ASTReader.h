@@ -340,6 +340,9 @@ class ASTIdentifierLookupTrait;
 /// The on-disk hash table(s) used for DeclContext name lookup.
 struct DeclContextLookupTable;
 
+/// The on-disk hash table(s) used for specialization decls.
+struct SpecializationsLookupTable;
+
 } // namespace reader
 
 } // namespace serialization
@@ -599,20 +602,29 @@ private:
   llvm::DenseMap<const DeclContext *,
                  serialization::reader::DeclContextLookupTable> Lookups;
 
+  /// Map from decls to specialized decls.
+  llvm::DenseMap<const Decl *,
+                 serialization::reader::SpecializationsLookupTable>
+      SpecializationsLookups;
+
   // Updates for visible decls can occur for other contexts than just the
   // TU, and when we read those update records, the actual context may not
   // be available yet, so have this pending map using the ID as a key. It
-  // will be realized when the context is actually loaded.
-  struct PendingVisibleUpdate {
+  // will be realized when the data is actually loaded.
+  struct UpdateData {
     ModuleFile *Mod;
     const unsigned char *Data;
   };
-  using DeclContextVisibleUpdates = SmallVector<PendingVisibleUpdate, 1>;
+  using DeclContextVisibleUpdates = SmallVector<UpdateData, 1>;
 
   /// Updates to the visible declarations of declaration contexts that
   /// haven't been loaded yet.
   llvm::DenseMap<serialization::DeclID, DeclContextVisibleUpdates>
       PendingVisibleUpdates;
+
+  using SpecializationsUpdate = SmallVector<UpdateData, 1>;
+  llvm::DenseMap<serialization::DeclID, SpecializationsUpdate>
+      PendingSpecializationsUpdates;
 
   /// The set of C++ or Objective-C classes that have forward
   /// declarations that have not yet been linked to their definitions.
@@ -639,6 +651,10 @@ private:
   bool ReadVisibleDeclContextStorage(ModuleFile &M,
                                      llvm::BitstreamCursor &Cursor,
                                      uint64_t Offset, serialization::DeclID ID);
+
+  bool ReadSpecializations(ModuleFile &M, llvm::BitstreamCursor &Cursor,
+                           uint64_t Offset, Decl *D);
+  void AddSpecializations(const Decl *D, const unsigned char *Data, ModuleFile &M);
 
   /// A vector containing identifiers that have already been
   /// loaded.
@@ -1343,6 +1359,11 @@ public:
   const serialization::reader::DeclContextLookupTable *
   getLoadedLookupTables(DeclContext *Primary) const;
 
+  /// Get the loaded specializations lookup tables for \p D,
+  /// if any.
+  serialization::reader::SpecializationsLookupTable *
+  getLoadedSpecializationsLookupTables(const Decl *D);
+
 private:
   struct ImportedModule {
     ModuleFile *Mod;
@@ -1982,6 +2003,10 @@ public:
   bool FindExternalVisibleDeclsByName(const DeclContext *DC,
                                       DeclarationName Name) override;
 
+  void
+  LoadExternalSpecializations(const Decl *D,
+                              ArrayRef<TemplateArgument> TemplateArgs) override;
+
   /// Read all of the declarations lexically stored in a
   /// declaration context.
   ///
@@ -2403,6 +2428,14 @@ public:
 
   bool isProcessingUpdateRecords() { return ProcessingUpdateRecords; }
 };
+
+/// Get a stable hash for template arguments across compiler invovations.
+/// This is used for loading corresponding specializations lazily according
+/// to the template arguments.
+/// Given it is fine to load additional specializations, we're tolerant to
+/// map different template arguments to the same hash value as long as the
+/// semantically same template arguments get the same hash value.
+unsigned GetTemplateArgsStableHash(ArrayRef<TemplateArgument> TemplateArgs);
 
 /// A simple helper class to unpack an integer to bits and consuming
 /// the bits in order.
