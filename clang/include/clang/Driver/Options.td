@@ -3018,6 +3018,7 @@ defm prebuilt_implicit_modules : BoolFOption<"prebuilt-implicit-modules",
 
 def fmodule_output_EQ : Joined<["-"], "fmodule-output=">,
   Flags<[NoXarchOption]>, Visibility<[ClangOption, CC1Option]>,
+  MarshallingInfoString<FrontendOpts<"ModuleOutputPath">>,
   HelpText<"Save intermediate module file results when compiling a standard C++ module unit.">;
 def fmodule_output : Flag<["-"], "fmodule-output">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption, CC1Option]>,
@@ -3030,6 +3031,11 @@ defm skip_odr_check_in_gmf : BoolOption<"f", "skip-odr-check-in-gmf",
   NegFlag<SetFalse, [], [CC1Option],
           "Perform ODR checks for decls in the global module fragment.">>,
   Group<f_Group>;
+
+defm gen_reduced_bmi : BoolFOption<"gen-reduced-bmi",
+  LangOpts<"GenReducedBMI">, DefaultFalse,
+  PosFlag<SetTrue, [], [CC1Option, ClangOption], "Generate reduced BMI.">,
+  NegFlag<SetFalse>, BothFlags<[], [ClangOption, CC1Option]>>;
 
 def fmodules_prune_interval : Joined<["-"], "fmodules-prune-interval=">, Group<i_Group>,
   Visibility<[ClangOption, CC1Option]>, MetaVarName<"<seconds>">,

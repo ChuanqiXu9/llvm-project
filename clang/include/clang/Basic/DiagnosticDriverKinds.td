@@ -238,6 +238,8 @@ def err_drv_invalid_argument_to_option : Error<
   "invalid argument '%0' to -%1">;
 def err_drv_missing_sanitizer_ignorelist : Error<
   "missing sanitizer ignorelist: '%0'">;
+def err_drv_incorrect_input_to_gen_reduced_bmi : Error <
+  "-fgen-reduced-bmi can only be used with module interface unit">;
 def err_drv_malformed_sanitizer_ignorelist : Error<
   "malformed sanitizer ignorelist: '%0'">;
 def err_drv_malformed_sanitizer_coverage_allowlist : Error<

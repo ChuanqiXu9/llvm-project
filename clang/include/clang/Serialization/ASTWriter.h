@@ -868,6 +868,10 @@ protected:
     return SemaPtr->getDiagnostics();
   }
 
+  const Preprocessor &getPreprocessor() const {
+    return PP;
+  }
+
 public:
   PCHGenerator(const Preprocessor &PP, InMemoryModuleCache &ModuleCache,
                StringRef OutputFile, StringRef isysroot,
