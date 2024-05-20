@@ -386,7 +386,7 @@ void ASTDeclWriter::VisitDecl(Decl *D) {
     Record.AddDeclRef(cast_or_null<Decl>(D->getLexicalDeclContext()));
 
   if (D->hasAttrs())
-    Record.AddAttributes(D->getAttrs());
+    Record.AddOffset(Writer.WriteDeclAttributeBlock(D));
 
   Record.push_back(Writer.getSubmoduleID(D->getOwningModule()));
 

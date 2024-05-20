@@ -628,11 +628,8 @@ void ASTDeclReader::VisitDecl(Decl *D) {
   D->setLocation(ThisDeclLoc);
 
   if (HasAttrs) {
-    AttrVec Attrs;
-    Record.readAttributes(Attrs);
-    // Avoid calling setAttrs() directly because it uses Decl::getASTContext()
-    // internally which is unsafe during derialization.
-    D->setAttrsImpl(Attrs, Reader.getContext());
+    uint64_t AttrOffset = ReadLocalOffset();
+    Reader.addPendingAttrs(D, AttrOffset);
   }
 
   // Determine whether this declaration is part of a (sub)module. If so, it

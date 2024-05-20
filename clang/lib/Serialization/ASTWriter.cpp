@@ -1090,6 +1090,8 @@ void ASTWriter::WriteBlockInfoBlock() {
   // Statements and Exprs can occur in the Decls and Types block.
   AddStmtsExprs(Stream, Record);
 
+  RECORD(DECL_ATTR);
+
   BLOCK(PREPROCESSOR_DETAIL_BLOCK);
   RECORD(PPD_MACRO_EXPANSION);
   RECORD(PPD_MACRO_DEFINITION);
@@ -5828,6 +5830,13 @@ void ASTWriter::WriteDeclUpdatesBlocks(RecordDataImpl &OffsetsRecord) {
     AddDeclRef(D, OffsetsRecord);
     OffsetsRecord.push_back(Record.Emit(DECL_UPDATES));
   }
+}
+
+uint64_t ASTWriter::WriteDeclAttributeBlock(Decl *D) {
+  RecordData RecordData;
+  ASTRecordWriter Record(*this, RecordData);
+  Record.AddAttributes(D->getAttrs());
+  return Record.Emit(DECL_ATTR);
 }
 
 void ASTWriter::AddAlignPackInfo(const Sema::AlignPackInfo &Info,

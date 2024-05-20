@@ -579,6 +579,10 @@ private:
   llvm::DenseMap<std::pair<const Decl *, unsigned>, NamedDecl *>
       LambdaDeclarationsForMerging;
 
+  /// A list of `<Decl *, Offset for Attribute block>` pair for decls whose
+  /// attributes are not readed.
+  llvm::DenseMap<Decl *, uint64_t> PendingDeclAttrs;
+
   /// Key used to identify LifetimeExtendedTemporaryDecl for merging,
   /// containing the lifetime-extending declaration and the mangling number.
   using LETemporaryKey = std::pair<Decl *, unsigned>;
@@ -657,6 +661,8 @@ private:
   bool ReadVisibleDeclContextStorage(ModuleFile &M,
                                      llvm::BitstreamCursor &Cursor,
                                      uint64_t Offset, GlobalDeclID ID);
+
+  bool ReadDeclAttributes(uint64_t Offset, Decl *D);
 
   /// A vector containing identifiers that have already been
   /// loaded.
@@ -2360,6 +2366,11 @@ public:
   /// history.
   void addPendingMacro(IdentifierInfo *II, ModuleFile *M,
                        uint32_t MacroDirectivesOffset);
+
+  void addPendingAttrs(Decl *D, uint64_t Offset) {
+    assert(!PendingDeclAttrs.count(D) && "Reading a declaration twice!");
+    PendingDeclAttrs[D] = Offset;
+  }
 
   /// Read the set of macros defined by this external macro source.
   void ReadDefinedMacros() override;

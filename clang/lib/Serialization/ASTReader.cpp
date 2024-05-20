@@ -1310,6 +1310,46 @@ bool ASTReader::ReadVisibleDeclContextStorage(ModuleFile &M,
   return false;
 }
 
+bool ASTReader::ReadDeclAttributes(uint64_t Offset, Decl *D) {
+  assert(Offset != 0);
+
+  ModuleFile *MF = getOwningModuleFile(D);
+  assert(MF);
+  llvm::BitstreamCursor &Cursor = MF->DeclsCursor;
+
+  SavedStreamPosition SavedPosition(Cursor);
+  if (llvm::Error Err = Cursor.JumpToBit(Offset)) {
+    Error(std::move(Err));
+    return true;
+  }
+
+  StringRef Blob;
+  Expected<unsigned> MaybeCode = Cursor.ReadCode();
+  if (!MaybeCode) {
+    Error(MaybeCode.takeError());
+    return true;
+  }
+
+  unsigned Code = MaybeCode.get();
+  ASTRecordReader Record(*this, *MF);
+  if (Expected<unsigned> MaybeRecCode = Record.readRecord(Cursor, Code))
+    assert(MaybeRecCode.get() == DECL_ATTR &&
+            "Expected DECL_ATTR record!");
+  else
+    llvm::report_fatal_error(
+        Twine("reading decl attributes: ") +
+        toString(MaybeCode.takeError()));
+
+  ReadingKindTracker ReadingKind(Read_Decl, *this);
+
+  AttrVec Attrs;
+  Record.readAttributes(Attrs);
+  // Avoid calling setAttrs() directly because it uses Decl::getASTContext()
+  // internally which is unsafe during derialization.
+  D->setAttrsImpl(Attrs, getContext());
+  return false;
+}
+
 void ASTReader::Error(StringRef Msg) const {
   Error(diag::err_fe_pch_malformed, Msg);
   if (PP.getLangOpts().Modules && !Diags.isDiagnosticInFlight() &&
@@ -9813,6 +9853,13 @@ void ASTReader::finishPendingActions() {
   for (auto *ND : PendingMergedDefinitionsToDeduplicate)
     getContext().deduplicateMergedDefinitonsFor(ND);
   PendingMergedDefinitionsToDeduplicate.clear();
+
+  while (!PendingDeclAttrs.empty()) {
+    auto ReadingDeclAttrs = std::move(PendingDeclAttrs);
+
+    for (auto [Decl, AttrOffset] : ReadingDeclAttrs)
+      ReadDeclAttributes(AttrOffset, Decl);
+  }
 }
 
 void ASTReader::diagnoseOdrViolations() {

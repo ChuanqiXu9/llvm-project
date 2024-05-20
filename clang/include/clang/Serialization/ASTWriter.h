@@ -592,6 +592,7 @@ private:
   void WriteFloatControlPragmaOptions(Sema &SemaRef);
   void WriteModuleFileExtension(Sema &SemaRef,
                                 ModuleFileExtensionWriter &Writer);
+  uint64_t WriteDeclAttributeBlock(Decl *D);
 
   unsigned DeclParmVarAbbrev = 0;
   unsigned DeclContextLexicalAbbrev = 0;

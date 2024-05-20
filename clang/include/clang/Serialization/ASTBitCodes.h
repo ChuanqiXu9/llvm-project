@@ -1946,7 +1946,12 @@ enum StmtCode {
 
   // OpenACC Constructs
   STMT_OPENACC_COMPUTE_CONSTRUCT,
+
+  // The last code for statements.
+  STMT_LAST = STMT_OPENACC_COMPUTE_CONSTRUCT,
 };
+
+const unsigned int DECL_ATTR = STMT_LAST + 1;
 
 /// The kinds of designators that can occur in a
 /// DesignatedInitExpr.
