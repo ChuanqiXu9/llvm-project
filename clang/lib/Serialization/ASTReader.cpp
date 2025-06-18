@@ -1400,6 +1400,7 @@ bool ASTReader::ReadLexicalDeclContextStorage(ModuleFile &M,
   }
   unsigned RecCode = MaybeRecCode.get();
   if (RecCode != DECL_CONTEXT_LEXICAL) {
+    assert(false);
     Error("Expected lexical block");
     return true;
   }
@@ -1442,6 +1443,7 @@ bool ASTReader::ReadVisibleDeclContextStorage(
   unsigned Code = MaybeCode.get();
 
   Expected<unsigned> MaybeRecCode = Cursor.readRecord(Code, Record, &Blob);
+  std::optional<unsigned> ModuleUnitHash;
   if (!MaybeRecCode) {
     Error(MaybeRecCode.takeError());
     return true;
@@ -1460,6 +1462,13 @@ bool ASTReader::ReadVisibleDeclContextStorage(
       return true;
     }
     break;
+  case VisibleDeclContextStorageKind::ModuleUnitLocalVisible:
+    if (RecCode != DECL_CONTEXT_MODULE_UNIT_LOCAL_VISIBLE) {
+      Error("Expected module local visible lookup table block");
+      return true;
+    }
+    ModuleUnitHash = Record[0];
+    break;
   case VisibleDeclContextStorageKind::TULocalVisible:
     if (RecCode != DECL_CONTEXT_TU_LOCAL_VISIBLE) {
       Error("Expected TU local lookup table block");
@@ -1477,6 +1486,10 @@ bool ASTReader::ReadVisibleDeclContextStorage(
     break;
   case VisibleDeclContextStorageKind::ModuleLocalVisible:
     PendingModuleLocalVisibleUpdates[ID].push_back(UpdateData{&M, Data});
+    break;
+  case VisibleDeclContextStorageKind::ModuleUnitLocalVisible:
+    assert(ModuleUnitHash);
+    PendingModuleUnitLocalVisibleUpdates[ID][*ModuleUnitHash].push_back(UpdateData{&M, Data});
     break;
   case VisibleDeclContextStorageKind::TULocalVisible:
     if (M.Kind == MK_MainFile)
@@ -3669,6 +3682,20 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       break;
     }
 
+    case UPDATE_MODULE_UNIT_LOCAL_VISIBLE: {
+      unsigned Idx = 0;
+      GlobalDeclID ID = ReadDeclID(F, Record, Idx);
+      unsigned ModuleUnitHash = Record[1];
+      auto *Data = (const unsigned char *)Blob.data();
+      PendingModuleUnitLocalVisibleUpdates[ID][ModuleUnitHash].push_back(UpdateData{&F, Data});
+      // If we've already loaded the decl, perform the updates when we finish
+      // loading this block.
+      if (Decl *D = GetExistingDecl(ID))
+        PendingUpdateRecords.push_back(
+            PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+      break;
+    }
+
     case UPDATE_TU_LOCAL_VISIBLE: {
       if (F.Kind != MK_MainFile)
         break;
@@ -3788,7 +3815,8 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       TotalLexicalDeclContexts += Record[2];
       TotalVisibleDeclContexts += Record[3];
       TotalModuleLocalVisibleDeclContexts += Record[4];
-      TotalTULocalVisibleDeclContexts += Record[5];
+      TotalModuleUnitLocalVisibleDeclContexts += Record[5];
+      TotalTULocalVisibleDeclContexts += Record[6];
       break;
 
     case UNUSED_FILESCOPED_DECLS:
@@ -4084,21 +4112,26 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
 
         uint64_t BaseOffset = F.DeclsBlockStartOffset;
         assert(BaseOffset && "Invalid DeclsBlockStartOffset for module file!");
-        uint64_t LocalLexicalOffset = Record[I++];
-        uint64_t LexicalOffset =
-            LocalLexicalOffset ? BaseOffset + LocalLexicalOffset : 0;
+        
         uint64_t LocalVisibleOffset = Record[I++];
         uint64_t VisibleOffset =
             LocalVisibleOffset ? BaseOffset + LocalVisibleOffset : 0;
         uint64_t LocalModuleLocalOffset = Record[I++];
         uint64_t ModuleLocalOffset =
             LocalModuleLocalOffset ? BaseOffset + LocalModuleLocalOffset : 0;
+        // uint64_t LocalModuleUnitLocalOffset = Record[I++];
+        // uint64_t ModuleUnitLocalOffset =
+        //     LocalModuleUnitLocalOffset ? BaseOffset + LocalModuleUnitLocalOffset : 0;
         uint64_t TULocalLocalOffset = Record[I++];
         uint64_t TULocalOffset =
             TULocalLocalOffset ? BaseOffset + TULocalLocalOffset : 0;
+        uint64_t LocalLexicalOffset = Record[I++];
+        uint64_t LexicalOffset =
+            LocalLexicalOffset ? BaseOffset + LocalLexicalOffset : 0;    
 
-        DelayedNamespaceOffsetMap[ID] = {LexicalOffset, VisibleOffset,
-                                         ModuleLocalOffset, TULocalOffset};
+        DelayedNamespaceOffsetMap[ID] = LookupBlockOffsets{{VisibleOffset,
+                                          ModuleLocalOffset, // ModuleUnitLocalOffset,
+                                          TULocalOffset}, LexicalOffset};
 
         assert(!GetExistingDecl(ID) &&
                "We shouldn't load the namespace in the front of delayed "
@@ -8568,6 +8601,18 @@ bool ASTReader::FindExternalVisibleDeclsByName(const DeclContext *DC,
           Decls.push_back(ND);
       }
     }
+
+    if (auto Iter = ModuleUnitLocalLookups.find(*getNamedModuleHash(NamedModule));
+        Iter != ModuleUnitLocalLookups.end()) {
+      auto &UnitLocalLookupTable = Iter->second;
+      if (auto It = UnitLocalLookupTable.find(DC); It != UnitLocalLookupTable.end()) {
+        for (GlobalDeclID ID : It->second.Table.find(Name)) {
+          NamedDecl *ND = cast<NamedDecl>(GetDecl(ID));
+          if (ND->getDeclName() == Name && Found.insert(ND).second)
+            Decls.push_back(ND);
+        }
+      }
+    }
   }
 
   if (auto It = TULocalLookups.find(DC); It != TULocalLookups.end()) {
@@ -8606,6 +8651,8 @@ void ASTReader::completeVisibleDeclsMap(const DeclContext *DC) {
 
   findAll(Lookups, NumVisibleDeclContextsRead);
   findAll(ModuleLocalLookups, NumModuleLocalVisibleDeclContexts);
+  for (auto &[_, ModuleUnitLocalLookupTable] : ModuleUnitLocalLookups)
+    findAll(ModuleUnitLocalLookupTable, NumModuleLocalVisibleDeclContexts);
   findAll(TULocalLookups, NumTULocalVisibleDeclContexts);
 
   for (DeclsMap::iterator I = Decls.begin(), E = Decls.end(); I != E; ++I) {
@@ -8746,6 +8793,12 @@ void ASTReader::PrintStats() {
         NumModuleLocalVisibleDeclContexts, TotalModuleLocalVisibleDeclContexts,
         ((float)NumModuleLocalVisibleDeclContexts /
          TotalModuleLocalVisibleDeclContexts * 100));
+  if (TotalModuleUnitLocalVisibleDeclContexts)
+    std::fprintf(
+        stderr, "  %u/%u module unit local visible declcontexts read (%f%%)\n",
+        NumModuleLocalVisibleDeclContexts, TotalModuleUnitLocalVisibleDeclContexts,
+        ((float)NumModuleLocalVisibleDeclContexts /
+         TotalModuleUnitLocalVisibleDeclContexts * 100));
   if (TotalTULocalVisibleDeclContexts)
     std::fprintf(stderr, "  %u/%u visible declcontexts in GMF read (%f%%)\n",
                  NumTULocalVisibleDeclContexts, TotalTULocalVisibleDeclContexts,
@@ -12968,4 +13021,14 @@ UnsignedOrNone clang::getPrimaryModuleHash(const Module *M) {
 
   StringRef PrimaryModuleName = M->getPrimaryModuleInterfaceName();
   return getStableHashForModuleName(PrimaryModuleName);
+}
+
+UnsignedOrNone clang::getNamedModuleHash(const Module *M) {
+  if (!M)
+    return std::nullopt;
+
+  if (M->isHeaderLikeModule())
+    return std::nullopt;
+
+  return getStableHashForModuleName(M->getTopLevelModuleName());
 }

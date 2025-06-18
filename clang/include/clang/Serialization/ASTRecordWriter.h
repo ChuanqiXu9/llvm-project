@@ -186,6 +186,10 @@ public:
     Record->push_back(Value.toInternalRepresentation());
   }
 
+  void writeLookupOffsets(const LookupBlockOffsets &Offsets) {
+    Writer->AddLookupOffsets(Offsets, *Record);
+  }
+
   /// Emit an integral value.
   void AddAPInt(const llvm::APInt &Value) {
     writeAPInt(Value);

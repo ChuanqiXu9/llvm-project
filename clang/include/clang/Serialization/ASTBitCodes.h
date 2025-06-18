@@ -742,6 +742,8 @@ enum ASTRecordTypes {
   UPDATE_MODULE_LOCAL_VISIBLE = 76,
 
   UPDATE_TU_LOCAL_VISIBLE = 77,
+
+  UPDATE_MODULE_UNIT_LOCAL_VISIBLE = 78,
 };
 
 /// Record types used within a source manager block.
@@ -1344,6 +1346,8 @@ enum DeclCode {
   /// A record containing the set of declarations that are
   /// only visible from DeclContext in the same module.
   DECL_CONTEXT_MODULE_LOCAL_VISIBLE,
+
+  DECL_CONTEXT_MODULE_UNIT_LOCAL_VISIBLE,
 
   /// A record that stores the set of declarations that are only visible
   /// to the TU.

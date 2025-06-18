@@ -107,6 +107,26 @@ class TypedefNameDecl;
 class ValueDecl;
 class VarDecl;
 
+struct VisibleLookupBlockOffsets {
+  uint64_t VisibleOffset = 0;
+  uint64_t ModuleLocalOffset = 0;
+  // uint64_t ModuleUnitLocalOffset = 0;
+  uint64_t TULocalOffset = 0;
+
+  operator bool() const {
+    return VisibleOffset || ModuleLocalOffset || // ModuleUnitLocalOffset ||
+           TULocalOffset;
+  }
+};
+
+struct LookupBlockOffsets : VisibleLookupBlockOffsets {
+  uint64_t LexicalOffset = 0;
+
+  operator bool() const {
+    return VisibleLookupBlockOffsets::operator bool() || LexicalOffset;
+  }
+};
+
 /// Abstract interface for callback invocations by the ASTReader.
 ///
 /// While reading an AST file, the ASTReader will call the methods of the
@@ -535,13 +555,6 @@ private:
   /// in the chain.
   DeclUpdateOffsetsMap DeclUpdateOffsets;
 
-  struct LookupBlockOffsets {
-    uint64_t LexicalOffset;
-    uint64_t VisibleOffset;
-    uint64_t ModuleLocalOffset;
-    uint64_t TULocalOffset;
-  };
-
   using DelayedNamespaceOffsetMapTy =
       llvm::DenseMap<GlobalDeclID, LookupBlockOffsets>;
 
@@ -659,6 +672,10 @@ private:
   llvm::DenseMap<const DeclContext *,
                  serialization::reader::ModuleLocalLookupTable>
       ModuleLocalLookups;
+  llvm::DenseMap<unsigned, 
+                 llvm::DenseMap<const DeclContext *,
+                                serialization::reader::DeclContextLookupTable>>
+      ModuleUnitLocalLookups;
   llvm::DenseMap<const DeclContext *,
                  serialization::reader::DeclContextLookupTable>
       TULocalLookups;
@@ -692,6 +709,9 @@ private:
   llvm::DenseMap<GlobalDeclID, DeclContextVisibleUpdates> PendingVisibleUpdates;
   llvm::DenseMap<GlobalDeclID, DeclContextVisibleUpdates>
       PendingModuleLocalVisibleUpdates;
+  using ModuleUnitLocalUpdates = llvm::DenseMap<unsigned, DeclContextVisibleUpdates>;
+  llvm::DenseMap<GlobalDeclID, ModuleUnitLocalUpdates>
+      PendingModuleUnitLocalVisibleUpdates;
   llvm::DenseMap<GlobalDeclID, DeclContextVisibleUpdates> TULocalUpdates;
 
   using SpecializationsUpdate = SmallVector<UpdateData, 1>;
@@ -730,6 +750,7 @@ private:
   enum class VisibleDeclContextStorageKind {
     GenerallyVisible,
     ModuleLocalVisible,
+    ModuleUnitLocalVisible,
     TULocalVisible,
   };
 
@@ -1178,7 +1199,8 @@ private:
 
   /// Number of module local visible decl contexts read/total.
   unsigned NumModuleLocalVisibleDeclContexts = 0,
-           TotalModuleLocalVisibleDeclContexts = 0;
+           TotalModuleLocalVisibleDeclContexts = 0,
+           TotalModuleUnitLocalVisibleDeclContexts = 0;
 
   /// Number of TU Local decl contexts read/total
   unsigned NumTULocalVisibleDeclContexts = 0,
@@ -2675,6 +2697,9 @@ inline bool shouldSkipCheckingODR(const Decl *D) {
 /// Calculate a hash value for the primary module name of the given module.
 /// \returns std::nullopt if M is not a C++ standard module.
 UnsignedOrNone getPrimaryModuleHash(const Module *M);
+/// Calculate the hash value for the module name of the given module.
+/// \returns std::nullopt if M is not a C++ standard module.
+UnsignedOrNone getNamedModuleHash(const Module *M);
 
 } // namespace clang
 

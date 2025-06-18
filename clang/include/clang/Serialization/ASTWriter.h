@@ -75,6 +75,9 @@ class StoredDeclsList;
 class SwitchCase;
 class Token;
 
+struct VisibleLookupBlockOffsets;
+struct LookupBlockOffsets;
+
 namespace serialization {
 enum class DeclUpdateKind;
 } // namespace serialization
@@ -502,6 +505,10 @@ private:
   /// file.
   unsigned NumModuleLocalDeclContexts = 0;
 
+  /// The number of module local visible declcontexts written to the AST
+  /// file.
+  unsigned NumModuleUnitLocalDeclContexts = 0;
+
   /// The number of TULocal declcontexts written to the AST file.
   unsigned NumTULocalDeclContexts = 0;
 
@@ -602,13 +609,12 @@ private:
   GenerateNameLookupTable(ASTContext &Context, const DeclContext *DC,
                           llvm::SmallVectorImpl<char> &LookupTable,
                           llvm::SmallVectorImpl<char> &ModuleLocalLookupTable,
+                          llvm::SmallVectorImpl<char> &ModuleUnitLocalLookupTable,
                           llvm::SmallVectorImpl<char> &TULocalLookupTable);
   uint64_t WriteDeclContextLexicalBlock(ASTContext &Context,
                                         const DeclContext *DC);
   void WriteDeclContextVisibleBlock(ASTContext &Context, DeclContext *DC,
-                                    uint64_t &VisibleBlockOffset,
-                                    uint64_t &ModuleLocalBlockOffset,
-                                    uint64_t &TULocalBlockOffset);
+                                    VisibleLookupBlockOffsets &Offsets);
   void WriteTypeDeclOffsets();
   void WriteFileDeclIDsMap();
   void WriteComments(ASTContext &Context);
@@ -642,9 +648,11 @@ private:
   unsigned DeclContextLexicalAbbrev = 0;
   unsigned DeclContextVisibleLookupAbbrev = 0;
   unsigned DeclModuleLocalVisibleLookupAbbrev = 0;
+  unsigned DeclModuleUnitLocalVisibleLookupAbbrev = 0;
   unsigned DeclTULocalLookupAbbrev = 0;
   unsigned UpdateVisibleAbbrev = 0;
   unsigned ModuleLocalUpdateVisibleAbbrev = 0;
+  unsigned ModuleUnitLocalUpdateVisibleAbbrev = 0;
   unsigned TULocalUpdateVisibleAbbrev = 0;
   unsigned DeclRecordAbbrev = 0;
   unsigned DeclTypedefAbbrev = 0;
@@ -776,6 +784,9 @@ public:
     auto I = DeclIDs.find(D);
     return (I == DeclIDs.end() || I->second >= clang::NUM_PREDEF_DECL_IDS);
   };
+
+  void AddLookupOffsets(const LookupBlockOffsets &Offsets,
+                        RecordDataImpl &Record);
 
   /// Emit a reference to a declaration.
   void AddDeclRef(const Decl *D, RecordDataImpl &Record);
