@@ -66,6 +66,7 @@ namespace clang {
       if (!Code)
         llvm::report_fatal_error(StringRef("unexpected declaration kind '") +
             D->getDeclKindName() + "'");
+      AbbrevToUse = 0;
       return Record.Emit(Code, AbbrevToUse);
     }
 

@@ -103,6 +103,7 @@ namespace clang {
       CurrentPackingBits.writeBits();
       assert(Code != serialization::STMT_NULL_PTR &&
              "unhandled sub-statement writing AST file");
+      AbbrevToUse = 0;
       return Record.EmitStmt(Code, AbbrevToUse);
     }
 
