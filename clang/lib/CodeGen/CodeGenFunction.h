@@ -3207,7 +3207,7 @@ public:
   void EmitVTableAssumptionLoads(const CXXRecordDecl *ClassDecl, Address This);
 
   /// Emit assumption that vptr load == global vtable.
-  void EmitVTableAssumptionLoad(const VPtr &vptr, Address This);
+  void EmitVTableAssumptionLoad(const VPtr &vptr, Address This, bool IsFinal = false);
 
   void EmitSynthesizedCXXCopyCtorCall(const CXXConstructorDecl *D, Address This,
                                       Address Src, const CXXConstructExpr *E);

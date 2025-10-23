@@ -1364,6 +1364,39 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
 
   if (CGM.shouldEmitConvergenceTokens())
     ConvergenceTokenStack.push_back(getOrEmitConvergenceEntryToken(CurFn));
+
+    if (auto *MD = dyn_cast_or_null<CXXMethodDecl>(CurCodeDecl)) {
+      const CXXRecordDecl *RD = MD->getParent();
+  
+      // A workaround for cases the base class defined virtual dtor while
+      // the derived class don't offer it. Then the current implementation may
+      // introduce undefined symbols as it introduce all symbols in the
+      // vtable.
+      bool BaseHasDtor = false;
+      RD->forallBases([&](const CXXRecordDecl *Base) -> bool {
+        if (Base->getDestructor() && !Base->getDestructor()->isImplicit())
+            BaseHasDtor = true;
+  
+        return true;
+      });
+      bool HasDtor = RD->getDestructor() && !RD->getDestructor()->isImplicit();
+
+      if (RD->isEffectivelyFinal() && (!BaseHasDtor || HasDtor) &&
+          !isa<CXXConstructorDecl, CXXDestructorDecl>(MD) && !MD->isStatic() &&
+          RD->isDynamicClass() &&
+          CGM.getCXXABI().doStructorsInitializeVPtrs(RD)) {
+        auto VTablePtrs = getVTablePointers(RD);
+        // Since the class is final, then we can be sure about its virtual
+        // function calls.
+        //
+        // Make sure we avoid multiple inheritance issues.
+        if (VTablePtrs.size() == 1 && CXXThisValue)
+          EmitVTableAssumptionLoad(
+              VTablePtrs.front(),
+              LoadCXXThisAddress(),
+              /*IsFinal=*/true);
+      }
+    }
 }
 
 void CodeGenFunction::EmitFunctionBody(const Stmt *Body) {

@@ -2428,7 +2428,7 @@ void CodeGenFunction::EmitInlinedInheritingCXXConstructorCall(
   EmitCtorPrologue(Ctor, CtorType, Params);
 }
 
-void CodeGenFunction::EmitVTableAssumptionLoad(const VPtr &Vptr, Address This) {
+void CodeGenFunction::EmitVTableAssumptionLoad(const VPtr &Vptr, Address This, bool IsFinal) {
   llvm::Value *VTableGlobal =
       CGM.getCXXABI().getVTableAddressPoint(Vptr.Base, Vptr.VTableClass);
   if (!VTableGlobal)
@@ -2444,6 +2444,13 @@ void CodeGenFunction::EmitVTableAssumptionLoad(const VPtr &Vptr, Address This) {
 
   llvm::Value *VPtrValue =
       GetVTablePtr(This, VTableGlobal->getType(), Vptr.VTableClass);
+
+  // We can be sure that the vptr won't be changed during the lifetime of the
+  // object.
+  if (auto *LI = dyn_cast<llvm::LoadInst>(VPtrValue); LI && IsFinal)
+    LI->setMetadata(llvm::LLVMContext::MD_invariant_load,
+                    llvm::MDNode::get(getLLVMContext(), {}));
+
   llvm::Value *Cmp =
       Builder.CreateICmpEQ(VPtrValue, VTableGlobal, "cmp.vtables");
   Builder.CreateAssumption(Cmp);
