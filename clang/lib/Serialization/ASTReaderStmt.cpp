@@ -3028,6 +3028,7 @@ Stmt *ASTReader::ReadStmt(ModuleFile &F) {
   case Read_None:
     llvm_unreachable("should not call this when not reading anything");
   case Read_Decl:
+  case Read_DeclInfo:
   case Read_Type:
     return ReadStmtFromStream(F);
   case Read_Stmt:

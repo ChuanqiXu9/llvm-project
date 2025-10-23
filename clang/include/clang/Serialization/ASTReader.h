@@ -563,6 +563,12 @@ private:
   /// = I + 1 has already been loaded.
   llvm::PagedVector<Decl *> DeclsLoaded;
 
+  // DeclInfo to DeclID
+  llvm::DenseMap<GlobalDeclID, GlobalDeclID> DeclInfosLoaded;
+  // DeclID to DeclInfo
+  llvm::DenseMap<GlobalDeclID, llvm::SmallVector<GlobalDeclID, 4>> DeclIDForDeclInfos;
+  llvm::DenseSet<GlobalDeclID> DeclInfosLoadingSet;
+
   using FileOffset = std::pair<ModuleFile *, uint64_t>;
   using FileOffsetsTy = SmallVector<FileOffset, 2>;
   using DeclUpdateOffsetsMap = llvm::DenseMap<GlobalDeclID, FileOffsetsTy>;
@@ -1379,7 +1385,7 @@ private:
 
   /// What kind of records we are reading.
   enum ReadingKind {
-    Read_None, Read_Decl, Read_Type, Read_Stmt
+    Read_None, Read_Decl, Read_Type, Read_Stmt, Read_DeclInfo
   };
 
   /// What kind of records we are reading.
@@ -1645,6 +1651,7 @@ private:
   RecordLocation TypeCursorForIndex(serialization::TypeID ID);
   void LoadedDecl(unsigned Index, Decl *D);
   Decl *ReadDeclRecord(GlobalDeclID ID);
+  Decl *ReadDeclInfo(GlobalDeclID ID);
   void markIncompleteDeclChain(Decl *D);
 
   /// Returns the most recent declaration of a declaration (which must be
@@ -1654,6 +1661,7 @@ private:
 
   RecordLocation DeclCursorForID(GlobalDeclID ID, SourceLocation &Location);
   void loadDeclUpdateRecords(PendingUpdateRecord &Record);
+  void loadDeclUpdate(GlobalDeclID ID, Decl *D, bool JustLoaded);
   void loadPendingDeclChain(Decl *D, uint64_t LocalOffset);
   void loadObjCCategories(GlobalDeclID ID, ObjCInterfaceDecl *D,
                           unsigned PreviousGeneration = 0);
@@ -2153,6 +2161,8 @@ public:
   /// building a new declaration.
   Decl *GetDecl(GlobalDeclID ID);
   Decl *GetExternalDecl(GlobalDeclID ID) override;
+
+  GlobalDeclID getDeclIndexFromInfo(GlobalDeclID ID);
 
   /// Resolve a declaration ID into a declaration. Return 0 if it's not
   /// been loaded yet.

@@ -483,6 +483,11 @@ public:
   /// Base declaration index in ASTReader for declarations local to this module.
   unsigned BaseDeclIndex = 0;
 
+  llvm::BitstreamCursor DeclInfosCursor;
+  uint64_t DeclInfosBlockStartOffset = 0;
+  unsigned LocalNumDeclInfos = 0;
+  const uint64_t *DeclInfoOffsets = nullptr;
+
   /// Array of file-level DeclIDs sorted by file.
   const serialization::unaligned_decl_id_t *FileSortedDecls = nullptr;
   unsigned NumFileSortedDecls = 0;

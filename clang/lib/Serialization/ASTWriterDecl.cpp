@@ -3093,3 +3093,71 @@ void ASTRecordWriter::AddFunctionDefinition(const FunctionDecl *FD) {
   }
   AddStmt(FD->getBody());
 }
+
+
+void ASTWriter::WriteDeclInfo(ASTContext &Context, const Decl *D) {
+  assert(D->isFromASTFile() && "We should only write decl info for decls from other module files");
+
+  LocalDeclID ID = ExternalDeclInfos[D];
+  assert(ID.isValid() && "Decl info ID is invalid");
+
+  RecordData Record;
+  ASTRecordWriter Writer(Context, *this, Record);
+  
+  if (WritingModule) {
+    llvm::errs() << "WriteDeclInfo: " << ID.getLocalDeclIndex() << " for ";
+    if (auto *ND = dyn_cast<NamedDecl>(D)) {
+      llvm::errs() << ND->getNameAsString() << "\n";
+    } else {
+      llvm::errs() << D->getDeclKindName() << "\n";
+    }
+    llvm::errs() << " as index " 
+                 << D->getGlobalID().getModuleFileIndex() << ":" 
+                 << D->getGlobalID().getLocalDeclIndex();
+    llvm::errs() << " from " 
+                 << Chain->getOwningModuleFile(D->getGlobalID())->ModuleName;
+    llvm::errs() << " when writing " << WritingModule->Name << "\n";
+  }
+  Record.push_back(D->getGlobalID().getRawValue());
+
+  // Writer.push_back(D->getKind());
+
+  // Module *M = D->getOwningModule();
+  // // Only named modules are meaningful for name lookup.
+  // if (M && M->isNamedModule())
+  //   Writer.AddString(M->getPrimaryModuleInterfaceName());
+  // else
+  //   Writer.AddString("");
+
+  // if (auto *ND = dyn_cast<NamedDecl>(D)) {
+  //   Writer.push_back(1);
+  //   Writer.AddDeclarationName(ND->getDeclName());
+  // } else {
+  //   Writer.push_back(0);
+  //   Record.push_back(D->getGlobalID().getRawValue());
+  // }
+
+  // if (auto *VD = dyn_cast<ValueDecl>(D)) {
+  //   Writer.push_back(1);
+  //   Writer.AddTypeRef(VD->getType());
+  // } else if (auto *TD = dyn_cast<TypeDecl>(D)) {
+  //   Writer.push_back(1);
+  //   Writer.AddTypeRef(Context.getTypeDeclType(TD));
+  // } else
+  //   Writer.push_back(0);
+  
+  // const DeclContext *Parent = D->getDeclContext()->getNonTransparentContext();
+  // Writer.AddDeclRef(cast_or_null<Decl>(Parent));
+
+  unsigned Offset = Writer.Emit(serialization::NAMED_DECL_INFO);
+  unsigned Index = ID.getLocalDeclIndex() - FirstDeclInfoIndex;
+
+  if (DeclInfoOffsets.size() == Index)
+    DeclInfoOffsets.emplace_back(Offset - DeclInfoBlockStartOffset);
+  else if (DeclInfoOffsets.size() < Index) {
+    DeclInfoOffsets.resize(Index + 1);
+    DeclInfoOffsets[Index] = Offset - DeclInfoBlockStartOffset;
+  } else
+    llvm_unreachable("decl info indices should be emitted in index order");
+}
+

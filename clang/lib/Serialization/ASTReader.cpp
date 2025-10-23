@@ -123,6 +123,7 @@
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Signals.h"
 #include "llvm/TargetParser/Triple.h"
 #include <algorithm>
 #include <cassert>
@@ -1065,12 +1066,16 @@ LocalDeclID LocalDeclID::get(ASTReader &Reader, ModuleFile &MF, DeclID Value) {
       ModuleFileIndex == 0 ? &MF : MF.TransitiveImports[ModuleFileIndex - 1];
   assert(OwningModuleFile);
 
-  unsigned LocalNumDecls = OwningModuleFile->LocalNumDecls;
+  if (!ID.isDeclInfo()) {
+    unsigned LocalNumDecls = OwningModuleFile->LocalNumDecls;
 
-  if (!ModuleFileIndex)
-    LocalNumDecls += NUM_PREDEF_DECL_IDS;
+    if (!ModuleFileIndex)
+      LocalNumDecls += NUM_PREDEF_DECL_IDS;
 
-  assert(LocalDeclID < LocalNumDecls);
+    assert(LocalDeclID < LocalNumDecls);
+  } else if (OwningModuleFile->LocalNumDeclInfos) {
+    assert(LocalDeclID < OwningModuleFile->LocalNumDeclInfos);
+  }
 #endif
   (void)Reader;
   (void)MF;
@@ -3714,6 +3719,15 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
           return Err;
         break;
 
+      case DECLINFO_BLOCK_ID:
+        F.DeclInfosCursor = Stream;
+        if (llvm::Error Err = Stream.SkipBlock())
+          return Err;
+        if (llvm::Error Err = ReadBlockAbbrevs(
+                F.DeclInfosCursor, DECLINFO_BLOCK_ID, &F.DeclInfosBlockStartOffset))
+          return Err;
+        break;
+
       case PREPROCESSOR_BLOCK_ID:
         F.MacroCursor = Stream;
         if (!PP.getExternalSource())
@@ -3844,6 +3858,17 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       break;
     }
 
+    case DECL_INFO_OFFSET: {
+      if (F.LocalNumDeclInfos != 0)
+        return llvm::createStringError(
+            std::errc::illegal_byte_sequence,
+            "duplicate DECL_INFO_OFFSET record in AST file");
+
+      F.DeclInfoOffsets = (const uint64_t *)Blob.data();
+      F.LocalNumDeclInfos = Record[0];
+      break;
+    }
+
     case TU_UPDATE_LEXICAL: {
       DeclContext *TU = ContextObj->getTranslationUnitDecl();
       LexicalContents Contents(
@@ -3855,32 +3880,50 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
     }
 
     case UPDATE_VISIBLE: {
+      llvm::errs() << "READING UPDATE_VISIBLE\n";
       unsigned Idx = 0;
       GlobalDeclID ID = ReadDeclID(F, Record, Idx);
       auto *Data = (const unsigned char*)Blob.data();
       PendingVisibleUpdates[ID].push_back(UpdateData{&F, Data});
       // If we've already loaded the decl, perform the updates when we finish
       // loading this block.
-      if (Decl *D = GetExistingDecl(ID))
+      if (Decl *D = GetExistingDecl(ID)) {
         PendingUpdateRecords.push_back(
             PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+        if (DeclIDForDeclInfos.count(ID)) {
+          for (auto DeclID : DeclIDForDeclInfos[ID]) {
+            PendingUpdateRecords.push_back(
+              PendingUpdateRecord(DeclID, D, /*JustLoaded=*/false));
+          }
+        }
+      }
       break;
     }
 
     case UPDATE_MODULE_LOCAL_VISIBLE: {
+      llvm::errs() << "READING UPDATE_MODULE_LOCAL_VISIBLE\n";
       unsigned Idx = 0;
       GlobalDeclID ID = ReadDeclID(F, Record, Idx);
       auto *Data = (const unsigned char *)Blob.data();
       PendingModuleLocalVisibleUpdates[ID].push_back(UpdateData{&F, Data});
       // If we've already loaded the decl, perform the updates when we finish
       // loading this block.
-      if (Decl *D = GetExistingDecl(ID))
+      if (Decl *D = GetExistingDecl(ID)) {
         PendingUpdateRecords.push_back(
             PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+        if (DeclIDForDeclInfos.count(ID)) {
+          for (auto DeclID : DeclIDForDeclInfos[ID]) {
+            PendingUpdateRecords.push_back(
+              PendingUpdateRecord(DeclID, D, /*JustLoaded=*/false));
+          }
+        }
+      }
+      llvm::errs() << "DONE READING UPDATE_MODULE_LOCAL_VISIBLE\n";
       break;
     }
 
     case UPDATE_TU_LOCAL_VISIBLE: {
+      llvm::errs() << "READING UPDATE_TU_LOCAL_VISIBLE\n";
       if (F.Kind != MK_MainFile)
         break;
       unsigned Idx = 0;
@@ -3889,35 +3932,58 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       TULocalUpdates[ID].push_back(UpdateData{&F, Data});
       // If we've already loaded the decl, perform the updates when we finish
       // loading this block.
-      if (Decl *D = GetExistingDecl(ID))
+      if (Decl *D = GetExistingDecl(ID)) {
         PendingUpdateRecords.push_back(
             PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+        if (DeclIDForDeclInfos.count(ID)) {
+          for (auto DeclID : DeclIDForDeclInfos[ID]) {
+            PendingUpdateRecords.push_back(
+              PendingUpdateRecord(DeclID, D, /*JustLoaded=*/false));
+          }
+        }
+      }
       break;
     }
 
     case CXX_ADDED_TEMPLATE_SPECIALIZATION: {
+      llvm::errs() << "READING CXX_ADDED_TEMPLATE_SPECIALIZATION\n";
       unsigned Idx = 0;
       GlobalDeclID ID = ReadDeclID(F, Record, Idx);
       auto *Data = (const unsigned char *)Blob.data();
       PendingSpecializationsUpdates[ID].push_back(UpdateData{&F, Data});
       // If we've already loaded the decl, perform the updates when we finish
       // loading this block.
-      if (Decl *D = GetExistingDecl(ID))
+      if (Decl *D = GetExistingDecl(ID)) {
         PendingUpdateRecords.push_back(
             PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+        if (DeclIDForDeclInfos.count(ID)) {
+          for (auto DeclID : DeclIDForDeclInfos[ID]) {
+            PendingUpdateRecords.push_back(
+              PendingUpdateRecord(DeclID, D, /*JustLoaded=*/false));
+          }
+        }
+      }
       break;
     }
 
     case CXX_ADDED_TEMPLATE_PARTIAL_SPECIALIZATION: {
+      llvm::errs() << "READING CXX_ADDED_TEMPLATE_PARTIAL_SPECIALIZATION\n";
       unsigned Idx = 0;
       GlobalDeclID ID = ReadDeclID(F, Record, Idx);
       auto *Data = (const unsigned char *)Blob.data();
       PendingPartialSpecializationsUpdates[ID].push_back(UpdateData{&F, Data});
       // If we've already loaded the decl, perform the updates when we finish
       // loading this block.
-      if (Decl *D = GetExistingDecl(ID))
+      if (Decl *D = GetExistingDecl(ID)) {
         PendingUpdateRecords.push_back(
             PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+        if (DeclIDForDeclInfos.count(ID)) {
+          for (auto DeclID : DeclIDForDeclInfos[ID]) {
+            PendingUpdateRecords.push_back(
+              PendingUpdateRecord(DeclID, D, /*JustLoaded=*/false));
+          }
+        }
+      }
       break;
     }
 
@@ -3955,6 +4021,7 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       break;
 
     case EAGERLY_DESERIALIZED_DECLS:
+      llvm::errs() << "READING EAGERLY_DESERIALIZED_DECLS\n";
       // FIXME: Skip reading this record if our ASTConsumer doesn't care
       // about "interesting" decls (for instance, if we're building a module).
       for (unsigned I = 0, N = Record.size(); I != N; /*in loop*/)
@@ -3962,6 +4029,7 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       break;
 
     case MODULAR_CODEGEN_DECLS:
+      llvm::errs() << "READING MODULAR_CODEGEN_DECLS\n";
       // FIXME: Skip reading this record if our ASTConsumer doesn't care about
       // them (ie: if we're not codegenerating this module).
       if (F.Kind == MK_MainFile ||
@@ -4003,11 +4071,13 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       break;
 
     case UNUSED_FILESCOPED_DECLS:
+      llvm::errs() << "READING UNUSED_FILESCOPED_DECLS\n";
       for (unsigned I = 0, N = Record.size(); I != N; /*in loop*/)
         UnusedFileScopedDecls.push_back(ReadDeclID(F, Record, I));
       break;
 
     case DELEGATING_CTORS:
+      llvm::errs() << "READING DELEGATING_CTORS\n";
       for (unsigned I = 0, N = Record.size(); I != N; /*in loop*/)
         DelegatingCtorDecls.push_back(ReadDeclID(F, Record, I));
       break;
@@ -4196,7 +4266,7 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       break;
 
     case PENDING_IMPLICIT_INSTANTIATIONS:
-
+      llvm::errs() << "READING PENDING_IMPLICIT_INSTANTIATIONS\n";
       if (Record.size() % 2 != 0)
         return llvm::createStringError(
             std::errc::illegal_byte_sequence,
@@ -4214,6 +4284,7 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       break;
 
     case SEMA_DECL_REFS:
+      llvm::errs() << "READING SEMA_DECL_REFS\n";
       if (Record.size() != 3)
         return llvm::createStringError(std::errc::illegal_byte_sequence,
                                        "Invalid SEMA_DECL_REFS block");
@@ -4264,23 +4335,37 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
     }
 
     case DECL_UPDATE_OFFSETS:
+      llvm::errs() << "READING DECL_UPDATE_OFFSETS\n";
       if (Record.size() % 2 != 0)
         return llvm::createStringError(
             std::errc::illegal_byte_sequence,
             "invalid DECL_UPDATE_OFFSETS block in AST file");
       for (unsigned I = 0, N = Record.size(); I != N; /*in loop*/) {
         GlobalDeclID ID = ReadDeclID(F, Record, I);
+        if (ID.isDeclInfo())
+          llvm::errs() << "GOT DECL INFO ID: " << ID.getModuleFileIndex() << ":" << ID.getLocalDeclIndex() << "\n";
+        else
+          llvm::errs() << "GOT DECL UPDATE ID: " << ID.getModuleFileIndex() << ":" << ID.getLocalDeclIndex() << "\n";
         DeclUpdateOffsets[ID].push_back(std::make_pair(&F, Record[I++]));
 
         // If we've already loaded the decl, perform the updates when we finish
         // loading this block.
-        if (Decl *D = GetExistingDecl(ID))
+        if (Decl *D = GetExistingDecl(ID)) {
           PendingUpdateRecords.push_back(
               PendingUpdateRecord(ID, D, /*JustLoaded=*/false));
+          if (DeclIDForDeclInfos.count(ID)) {
+            for (auto DeclID : DeclIDForDeclInfos[ID]) {
+              PendingUpdateRecords.push_back(
+                PendingUpdateRecord(DeclID, D, /*JustLoaded=*/false));
+            }
+          }
+        }
       }
+      llvm::errs() << "DONE READING DECL_UPDATE_OFFSETS\n";
       break;
 
     case DELAYED_NAMESPACE_LEXICAL_VISIBLE_RECORD: {
+      llvm::errs() << "READING DELAYED_NAMESPACE_LEXICAL_VISIBLE_RECORD\n";
       if (Record.size() % 5 != 0)
         return llvm::createStringError(
             std::errc::illegal_byte_sequence,
@@ -4311,6 +4396,7 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
                "We shouldn't load the namespace in the front of delayed "
                "namespace lexical and visible block");
       }
+      llvm::errs() << "DONE READING DELAYED_NAMESPACE_LEXICAL_VISIBLE_RECORD\n";
       break;
     }
 
@@ -8324,11 +8410,26 @@ GlobalDeclID ASTReader::getGlobalDeclID(ModuleFile &F,
           ? &F
           : F.TransitiveImports[OwningModuleFileIndex - 1];
 
-  if (OwningModuleFileIndex == 0)
+  if (OwningModuleFileIndex == 0 && !LocalID.isDeclInfo())
     ID -= NUM_PREDEF_DECL_IDS;
 
   uint64_t NewModuleFileIndex = OwningModuleFile->Index + 1;
-  return GlobalDeclID(NewModuleFileIndex, ID);
+
+  if (LocalID.isDeclInfo()) {
+    llvm::errs() << "Read Decl Info "
+                 <<  NewModuleFileIndex
+                 << ":"
+                 << ID
+                 << " from "
+                 << OwningModuleFile->ModuleName
+                 << "\n";
+
+    if (NewModuleFileIndex == 2 && ID == 2 && OwningModuleFile->ModuleName == "b") {
+      llvm::sys::PrintStackTrace(llvm::errs());
+    }
+  }
+
+  return GlobalDeclID(NewModuleFileIndex, ID, LocalID.isDeclInfo());
 }
 
 bool ASTReader::isDeclIDFromModule(GlobalDeclID ID, ModuleFile &M) const {
@@ -8512,6 +8613,14 @@ Decl *ASTReader::GetExistingDecl(GlobalDeclID ID) {
     return D;
   }
 
+  if (ID.isDeclInfo()) {
+    auto Iter = DeclInfosLoaded.find(ID);
+    if (Iter != DeclInfosLoaded.end())
+      return GetExistingDecl(Iter->second);
+
+    return nullptr;
+  }
+
   unsigned Index = translateGlobalDeclIDToIndex(ID);
 
   if (Index >= DeclsLoaded.size()) {
@@ -8526,6 +8635,16 @@ Decl *ASTReader::GetExistingDecl(GlobalDeclID ID) {
 Decl *ASTReader::GetDecl(GlobalDeclID ID) {
   if (ID < NUM_PREDEF_DECL_IDS)
     return GetExistingDecl(ID);
+
+  if (ID.isDeclInfo()) {
+    if (DeclInfosLoaded.find(ID) != DeclInfosLoaded.end())
+      return GetDecl(DeclInfosLoaded[ID]);
+
+    Decl *D = ReadDeclInfo(ID);
+    // if (DeserializationListener)
+    //   DeserializationListener->DeclRead(ID, D);
+    return D;
+  }
 
   unsigned Index = translateGlobalDeclIDToIndex(ID);
 
@@ -8542,6 +8661,15 @@ Decl *ASTReader::GetDecl(GlobalDeclID ID) {
   }
 
   return DeclsLoaded[Index];
+}
+
+GlobalDeclID ASTReader::getDeclIndexFromInfo(GlobalDeclID ID) {
+  if (!ID.isDeclInfo()) {
+    return ID;
+  }
+
+  GetDecl(ID);
+  return DeclInfosLoaded[ID];
 }
 
 LocalDeclID ASTReader::mapGlobalIDToModuleFileGlobalID(ModuleFile &M,
@@ -8827,11 +8955,21 @@ bool ASTReader::FindExternalVisibleDeclsByName(const DeclContext *DC,
   if (!Name)
     return false;
 
+  llvm::errs() << "FINDING EXTERNAL VISIBLE DECLS BY NAME: " << Name.getAsString() 
+    << " in " << DC->getDeclKindName() << " ";
+  if (auto *ND = dyn_cast<NamedDecl>(DC))
+    llvm::errs() << ND->getNameAsString() << "\n";
+  else
+    llvm::errs() << "\n";
+
   // Load the list of declarations.
   DeclsSet DS;
 
   auto Find = [&, this](auto &&Table, auto &&Key) {
     for (GlobalDeclID ID : Table.find(Key)) {
+      if (DeclInfosLoadingSet.contains(ID))
+        continue;
+
       NamedDecl *ND = cast<NamedDecl>(GetDecl(ID));
       if (ND->getDeclName() != Name)
         continue;

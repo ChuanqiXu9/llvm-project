@@ -62,6 +62,7 @@
 #include "llvm/Bitstream/BitstreamReader.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/SaveAndRestore.h"
+#include "llvm/Support/Signals.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -85,7 +86,9 @@ class RedeclarableResult {
 
 public:
   RedeclarableResult(Decl *MergeWith, GlobalDeclID FirstID, bool IsKeyDecl)
-      : MergeWith(MergeWith), FirstID(FirstID), IsKeyDecl(IsKeyDecl) {}
+      : MergeWith(MergeWith), FirstID(FirstID), IsKeyDecl(IsKeyDecl) {
+    assert(!FirstID.isDeclInfo());
+  }
 
   /// Retrieve the first ID.
   GlobalDeclID getFirstID() const { return FirstID; }
@@ -274,7 +277,9 @@ public:
                 ASTReader::RecordLocation Loc, GlobalDeclID thisDeclID,
                 SourceLocation ThisDeclLoc)
       : Reader(Reader), MergeImpl(Reader), Record(Record), Loc(Loc),
-        ThisDeclID(thisDeclID), ThisDeclLoc(ThisDeclLoc) {}
+        ThisDeclID(thisDeclID), ThisDeclLoc(ThisDeclLoc) {
+      assert(!ThisDeclID.isDeclInfo());
+    }
 
   template <typename DeclT>
   static Decl *getMostRecentDeclImpl(Redeclarable<DeclT> *D);
@@ -2282,7 +2287,7 @@ RedeclarableResult ASTDeclReader::VisitCXXRecordDeclImpl(CXXRecordDecl *D) {
   // Lazily load the key function to avoid deserializing every method so we can
   // compute it.
   if (WasDefinition) {
-    GlobalDeclID KeyFn = readDeclID();
+    GlobalDeclID KeyFn = Reader.getDeclIndexFromInfo(readDeclID());
     if (KeyFn.isValid() && D->isCompleteDefinition())
       // FIXME: This is wrong for the ARM ABI, where some other module may have
       // made this function no longer be a key function. We need an update
@@ -2812,6 +2817,12 @@ void ASTDeclReader::VisitDeclContext(DeclContext *DC,
 template <typename T>
 RedeclarableResult ASTDeclReader::VisitRedeclarable(Redeclarable<T> *D) {
   GlobalDeclID FirstDeclID = readDeclID();
+
+  if (FirstDeclID.isDeclInfo()) {
+    FirstDeclID = Reader.getDeclIndexFromInfo(FirstDeclID);
+    assert(!FirstDeclID.isDeclInfo());
+  }
+
   Decl *MergeWith = nullptr;
 
   bool IsKeyDecl = ThisDeclID == FirstDeclID;
@@ -2985,6 +2996,7 @@ void ASTDeclMerger::mergeTemplatePattern(RedeclarableTemplateDecl *D,
 template <typename T>
 void ASTDeclMerger::mergeRedeclarableImpl(Redeclarable<T> *DBase, T *Existing,
                                           GlobalDeclID KeyDeclID) {
+  assert(!KeyDeclID.isDeclInfo() && "We shouldn't merge with DeclInfoID");
   auto *D = static_cast<T *>(DBase);
   T *ExistingCanon = Existing->getCanonicalDecl();
   T *DCanon = D->getCanonicalDecl();
@@ -3278,6 +3290,7 @@ bool ASTReader::isConsumerInterestedIn(Decl *D) {
 /// Get the correct cursor and offset for loading a declaration.
 ASTReader::RecordLocation ASTReader::DeclCursorForID(GlobalDeclID ID,
                                                      SourceLocation &Loc) {
+  assert(!ID.isDeclInfo() && "We shouldn't get DeclInfoID");
   ModuleFile *M = getOwningModuleFile(ID);
   assert(M);
   unsigned LocalDeclIndex = ID.getLocalDeclIndex();
@@ -3919,6 +3932,8 @@ void ASTReader::markIncompleteDeclChain(Decl *D) {
 
 /// Read the declaration at the given offset from the AST file.
 Decl *ASTReader::ReadDeclRecord(GlobalDeclID ID) {
+  assert(!ID.isDeclInfo());
+
   SourceLocation DeclLoc;
   RecordLocation Loc = DeclCursorForID(ID, DeclLoc);
   llvm::BitstreamCursor &DeclsCursor = Loc.F->DeclsCursor;
@@ -4281,10 +4296,19 @@ Decl *ASTReader::ReadDeclRecord(GlobalDeclID ID) {
     // Get the lexical and visible block for the delayed namespace.
     // It is sufficient to judge if ID is in DelayedNamespaceOffsetMap.
     // But it may be more efficient to filter the other cases.
-    if (!Offsets && isa<NamespaceDecl>(D))
+    if (!Offsets && isa<NamespaceDecl>(D)) {
       if (auto Iter = DelayedNamespaceOffsetMap.find(ID);
           Iter != DelayedNamespaceOffsetMap.end())
         Offsets = Iter->second;
+
+      if (!Offsets && DeclIDForDeclInfos.count(ID)) {
+        for (auto DeclInfoID : DeclIDForDeclInfos[ID]) {
+          if (auto Iter = DelayedNamespaceOffsetMap.find(DeclInfoID);
+              Iter != DelayedNamespaceOffsetMap.end())
+            Offsets = Iter->second;
+        }
+      }
+    }
 
     if (Offsets.VisibleOffset &&
         ReadVisibleDeclContextStorage(
@@ -4312,6 +4336,13 @@ Decl *ASTReader::ReadDeclRecord(GlobalDeclID ID) {
   // Load any relevant update records.
   PendingUpdateRecords.push_back(
       PendingUpdateRecord(ID, D, /*JustLoaded=*/true));
+  
+  if (DeclIDForDeclInfos.count(ID)) {
+    for (auto DeclInfoID : DeclIDForDeclInfos[ID]) {
+      PendingUpdateRecords.push_back(
+        PendingUpdateRecord(DeclInfoID, GetDecl(DeclInfoID), /*JustLoaded=*/true));
+    }
+  }
 
   // Load the categories after recursive loading is finished.
   if (auto *Class = dyn_cast<ObjCInterfaceDecl>(D))
@@ -4326,6 +4357,15 @@ Decl *ASTReader::ReadDeclRecord(GlobalDeclID ID) {
   // We don't pass it to the consumer immediately because we may be in recursive
   // loading, and some declarations may still be initializing.
   PotentiallyInterestingDecls.push_back(D);
+  // llvm::errs() << "Added as potential interesting Decl naturally:\n";
+  // if (auto *ND = dyn_cast<NamedDecl>(D)) {
+  //   llvm::errs() << "NamedDecl: " << ND->getNameAsString() << "\n";
+  // } else {
+  //   llvm::errs() << "Decl: " << D->getDeclKindName() << "\n";
+  // }
+  // if (auto *FD = dyn_cast<FunctionDecl>(D))
+  //   llvm::errs() << "does this has a body: " << FD->doesThisDeclarationHaveABody() << "\n";
+  // llvm::errs() << "if this is interested: " << isConsumerInterestedIn(D) << "\n";
 
   return D;
 }
@@ -4393,6 +4433,38 @@ void ASTReader::loadDeclUpdateRecords(PendingUpdateRecord &Record) {
   GlobalDeclID ID = Record.ID;
   Decl *D = Record.D;
   ProcessingUpdatesRAIIObj ProcessingUpdates(*this);
+  loadDeclUpdate(ID, D, Record.JustLoaded);
+
+  if (DeclIDForDeclInfos.count(ID)) {
+    for (auto DeclInfoID : DeclIDForDeclInfos[ID]) {
+      loadDeclUpdate(DeclInfoID, D, Record.JustLoaded);
+    }
+  }
+
+  if (DeclInfosLoaded.count(ID))
+    loadDeclUpdate(DeclInfosLoaded[ID], D, Record.JustLoaded);
+
+  if (!ID.isDeclInfo() && ID.getModuleFileIndex() == 1 && ID.getLocalDeclIndex() == 6)
+    loadDeclUpdate(GlobalDeclID(2, 2, true), D, Record.JustLoaded);
+}
+
+void ASTReader::loadDeclUpdate(GlobalDeclID ID, Decl *D, bool JustLoaded) {
+  llvm::errs() << "LOADING DECL UPDATE: ";
+  if (ID.isDeclInfo())
+    llvm::errs() << "DECL UPDATE INFO: " << ID.getModuleFileIndex() << ":" << ID.getLocalDeclIndex() << "\n";
+  else
+    llvm::errs() << "DECL UPDATE ID: " << ID.getModuleFileIndex() << ":" << ID.getLocalDeclIndex() << "\n";
+
+  if (!ID.isDeclInfo() && isa<CXXDestructorDecl>(D) && ID.getModuleFileIndex() == 1 && ID.getLocalDeclIndex() == 6) {
+    if (DeclIDForDeclInfos.count(ID)) {
+      llvm::errs() << "ID in DeclIDForDeclInfos:\n";
+      for (auto DeclInfoID : DeclIDForDeclInfos[ID]) {
+        llvm::errs() << "DeclInfoID: " << DeclInfoID.getModuleFileIndex() << ":" << DeclInfoID.getLocalDeclIndex() << "\n";
+      }
+    }
+    llvm::sys::PrintStackTrace(llvm::errs());
+  }
+
   DeclUpdateOffsetsMap::iterator UpdI = DeclUpdateOffsets.find(ID);
 
   if (UpdI != DeclUpdateOffsets.end()) {
@@ -4403,7 +4475,7 @@ void ASTReader::loadDeclUpdateRecords(PendingUpdateRecord &Record) {
     // the declaration, then we know it was interesting and we skip the call
     // to isConsumerInterestedIn because it is unsafe to call in the
     // current ASTReader state.
-    bool WasInteresting = Record.JustLoaded || isConsumerInterestedIn(D);
+    bool WasInteresting = JustLoaded || isConsumerInterestedIn(D);
     for (auto &FileAndOffset : UpdateOffsets) {
       ModuleFile *F = FileAndOffset.first;
       uint64_t Offset = FileAndOffset.second;
@@ -4428,6 +4500,14 @@ void ASTReader::loadDeclUpdateRecords(PendingUpdateRecord &Record) {
         llvm::report_fatal_error(
             Twine("ASTReader::loadDeclUpdateRecords failed reading rec code: ") +
             toString(MaybeCode.takeError()));
+
+      if (ID.isDeclInfo() && ID.getModuleFileIndex() == 2 && ID.getLocalDeclIndex() == 2)
+        ID = GlobalDeclID(1, 6, false);
+
+      if (ID.isDeclInfo()) {
+        assert(DeclInfosLoaded.find(ID) != DeclInfosLoaded.end());
+        ID = DeclInfosLoaded[ID];
+      }
 
       ASTDeclReader Reader(*this, Record, RecordLocation(F, Offset), ID,
                            SourceLocation());
@@ -5015,4 +5095,152 @@ void ASTDeclReader::UpdateDecl(Decl *D) {
       break;
     }
   }
+}
+
+
+Decl *ASTReader::ReadDeclInfo(GlobalDeclID ID) {
+  assert(ID.isDeclInfo() && "Read DeclInfo should only accept DeclInfo ID");
+
+  // DeclInfosLoadingSet.insert(ID);
+
+  ModuleFile *M = getOwningModuleFile(ID);
+  assert(M);
+  unsigned LocalDeclIndex = ID.getLocalDeclIndex();
+  assert(LocalDeclIndex < M->LocalNumDeclInfos);
+  assert(M->DeclInfosBlockStartOffset);
+  uint64_t Offset = M->DeclInfoOffsets[LocalDeclIndex] +
+    M->DeclInfosBlockStartOffset;
+  llvm::BitstreamCursor &DeclInfosCursor = M->DeclInfosCursor;
+
+  SavedStreamPosition SavedPosition(DeclInfosCursor);
+
+  // ReadingKindTracker ReadingKind(Read_Decl, *this);
+
+  // Deserializing ADecl(this);
+
+  auto Fail = [](const char *what, llvm::Error &&Err) {
+    llvm::report_fatal_error(Twine("ASTReader::readDeclInfo failed ") + what +
+                             ": " + toString(std::move(Err)));
+  };
+
+  if (llvm::Error JumpFailed = DeclInfosCursor.JumpToBit(Offset)) {
+    Fail("jumping", std::move(JumpFailed));
+    assert(false && "jumpfailed");
+    return nullptr;
+  }
+
+  ASTRecordReader Record(*this, *M);
+
+  Expected<unsigned> MaybeCode = DeclInfosCursor.ReadCode();
+  if (!MaybeCode) {
+    Fail("reading code", MaybeCode.takeError());
+    assert(false && "reading code failed");
+    return nullptr;
+  }
+  unsigned Code = MaybeCode.get();
+
+  Expected<unsigned> MaybeDeclCode = Record.readRecord(DeclInfosCursor, Code);
+  if (!MaybeDeclCode) {
+    llvm::report_fatal_error(
+        Twine("ASTReader::readDeclRecord failed reading decl code: ") +
+        toString(MaybeDeclCode.takeError()));
+    assert(false && "reading decl code failed");
+    return nullptr;
+  }
+
+  if (MaybeDeclCode.get() != NAMED_DECL_INFO) {
+    llvm::report_fatal_error("Bad Code");
+    assert(false && "bad code");
+    return nullptr;
+  }
+
+  {
+    llvm::errs() << "Reading Decl Info "
+                 << ID.getModuleFileIndex() << ":"
+                 << ID.getLocalDeclIndex()
+                 << " in "
+                 << M->ModuleName
+                 << "\n";
+
+    Decl *Ret = nullptr;
+
+    GlobalDeclID GlobalID = Record.readDeclID();
+
+    llvm::errs() << "Got GlobalID: " 
+                 << GlobalID.getModuleFileIndex() 
+                 << ":"
+                 << GlobalID.getLocalDeclIndex()
+                 << " in "
+                 << getOwningModuleFile(GlobalID)->ModuleName
+                 << "\n";
+
+    assert(!GlobalID.isDeclInfo());
+    assert(GlobalID.isValid());
+    DeclInfosLoaded[ID] = GlobalID;
+    DeclIDForDeclInfos[GlobalID].push_back(ID);
+    Ret = GetDecl(GlobalID);
+
+    if (auto *ND = dyn_cast<NamedDecl>(Ret)) {
+      llvm::errs() << "Got NamedDecl: " << ND->getNameAsString() << "\n";
+    } else {
+      llvm::errs() << "Got Decl: " << Ret->getDeclKindName() << "\n";
+    }
+    return Ret;
+  }
+
+  {
+    Decl *Ret = nullptr;
+
+    GlobalDeclID GlobalID = Record.readDeclID();
+    Ret = GetDecl(GlobalID);
+    // DeclInfosLoaded[ID] = Ret;
+    DeclInfosLoadingSet.erase(ID);
+    return Ret;
+  }
+
+  auto DKind = (Decl::Kind)Record.readInt();
+  std::string ModuleName = Record.readString();
+
+  DeclarationName Name;
+  GlobalDeclID GID;
+  if (Record.readInt()) {
+    Name = Record.readDeclarationName();
+  } else {
+    GID = Record.readDeclID();
+  }
+
+  GlobalDeclID ParentID = Record.readDeclID();
+  Decl *Parent = nullptr;
+  if (ParentID.isValid()) {
+    Parent = GetDecl(ParentID);
+  }
+
+  Decl *Ret = nullptr;
+
+  GlobalDeclID GlobalID = Record.readDeclID();
+  Ret = GetDecl(GlobalID);
+  // DeclInfosLoaded[ID] = Ret;
+  DeclInfosLoadingSet.erase(ID);
+  return Ret;
+
+  if (Name) {
+    for (auto *Found : cast<DeclContext>(Parent)->lookup(Name))  {
+      if (Found->getKind() != DKind)
+        continue;
+
+      Module *M = Found->getOwningModule();
+      if (M && M->isNamedModule() && M->getPrimaryModuleInterfaceName() != ModuleName)
+        continue;
+
+      Ret = Found;
+      break;
+    }
+  } else {
+    Ret = GetDecl(GID);
+  }
+
+  // DeclInfosLoaded[ID] = Ret;
+  DeclInfosLoadingSet.erase(ID);
+
+  return Ret;
 }

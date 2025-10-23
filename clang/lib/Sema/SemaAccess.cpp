@@ -1627,7 +1627,8 @@ Sema::AccessResult Sema::CheckDestructorAccess(SourceLocation Loc,
                                                QualType ObjectTy) {
   if (!getLangOpts().AccessControl)
     return AR_accessible;
-
+  
+  assert(Dtor);
   // There's never a path involved when checking implicit destructor access.
   AccessSpecifier Access = Dtor->getAccess();
   if (Access == AS_public)

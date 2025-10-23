@@ -126,6 +126,8 @@ public:
 
   unsigned getLocalDeclIndex() const;
 
+  bool isDeclInfo() const;
+
   // The DeclID may be compared with predefined decl ID.
   friend bool operator==(const DeclIDBase &LHS, const DeclID &RHS) {
     return LHS.ID == RHS;
@@ -191,6 +193,8 @@ class LocalDeclID : public DeclIDBase {
 public:
   LocalDeclID() : Base() {}
 
+  static LocalDeclID getDeclInfoID(uint32_t);
+
   static LocalDeclID get(ASTReader &Reader, serialization::ModuleFile &MF,
                          DeclID ID);
   static LocalDeclID get(ASTReader &Reader, serialization::ModuleFile &MF,
@@ -215,8 +219,7 @@ public:
   GlobalDeclID() : Base() {}
   explicit GlobalDeclID(DeclID ID) : Base(ID) {}
 
-  explicit GlobalDeclID(unsigned ModuleFileIndex, unsigned LocalID)
-      : Base((DeclID)ModuleFileIndex << 32 | (DeclID)LocalID) {}
+  explicit GlobalDeclID(unsigned ModuleFileIndex, unsigned LocalID, bool isDeclInfo = false);
 
   // For DeclIDIterator<GlobalDeclID> to be able to convert a GlobalDeclID
   // to a LocalDeclID.

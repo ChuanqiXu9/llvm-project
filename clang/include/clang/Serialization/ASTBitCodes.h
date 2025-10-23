@@ -342,6 +342,8 @@ enum BlockIDs {
   /// These records should not change the \a ASTFileSignature.  See \a
   /// UnhashedControlBlockRecordTypes for the list of records.
   UNHASHED_CONTROL_BLOCK_ID,
+
+  DECLINFO_BLOCK_ID,
 };
 
 /// Record types that occur within the control block.
@@ -748,6 +750,8 @@ enum ASTRecordTypes {
 
   /// Record code for #pragma clang riscv intrinsic vector.
   RISCV_VECTOR_INTRINSICS_PRAGMA = 78,
+
+  DECL_INFO_OFFSET = 79,
 };
 
 /// Record types used within a source manager block.
@@ -2074,6 +2078,11 @@ enum StmtCode {
   EXPR_HLSL_OUT_ARG,
 
   STMT_DEFER,
+};
+
+
+enum DeclInfoCode {
+  NAMED_DECL_INFO = 237
 };
 
 /// The kinds of designators that can occur in a

@@ -2272,5 +2272,21 @@ DependentDiagnostic *DependentDiagnostic::Create(ASTContext &C,
 }
 
 unsigned DeclIDBase::getLocalDeclIndex() const {
-  return ID & llvm::maskTrailingOnes<DeclID>(32);
+  return ID & llvm::maskTrailingOnes<DeclID>(31);
+}
+
+bool DeclIDBase::isDeclInfo() const {
+  return uint32_t(ID) & llvm::maskLeadingOnes<uint32_t>(1);
+}
+
+LocalDeclID LocalDeclID::getDeclInfoID(uint32_t Index) {
+  assert(Index < llvm::maskLeadingOnes<uint32_t>(1) && "Too many decls.");
+  return LocalDeclID(Index | llvm::maskLeadingOnes<uint32_t>(1));
+}
+
+GlobalDeclID::GlobalDeclID(unsigned ModuleFileIndex, unsigned LocalID, bool IsDeclInfo) {
+  assert(LocalID < llvm::maskLeadingOnes<uint32_t>(1) && "Too many decls.");
+  if (IsDeclInfo)
+    LocalID = LocalID | llvm::maskLeadingOnes<uint32_t>(1);
+  ID = (DeclID)ModuleFileIndex << 32 | (DeclID)LocalID;
 }

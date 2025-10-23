@@ -233,6 +233,18 @@ private:
   /// unit, while 0 is reserved for NULL.
   llvm::DenseMap<const Decl *, LocalDeclID> DeclIDs;
 
+  uint32_t FirstDeclInfoIndex = 0;
+  uint32_t NextDeclInfoIndex = FirstDeclInfoIndex;
+
+  llvm::DenseMap<const Decl *, LocalDeclID> ExternalDeclInfos;
+
+  std::vector<uint64_t> DeclInfoOffsets;
+
+  std::deque<const Decl *> DeclInfosToEmit;
+  bool DoneWritinDeclInfos = false;
+
+  uint64_t DeclInfoBlockStartOffset = 0;
+
   /// Set of predefined decls. This is a helper data to determine if a decl
   /// is predefined. It should be more clear and safer to query the set
   /// instead of comparing the result of `getDeclID()` or `GetDeclRef()`.
@@ -623,6 +635,9 @@ private:
   void WriteDeclContextVisibleBlock(ASTContext &Context, DeclContext *DC,
                                     VisibleLookupBlockOffsets &Offsets);
   void WriteTypeDeclOffsets();
+  void WriteDeclInfos(ASTContext &Context);
+  void WriteDeclInfo(ASTContext &Context, const Decl *D);
+  LocalDeclID GetDeclInfoID(const Decl *);
   void WriteFileDeclIDsMap();
   void WriteComments(ASTContext &Context);
   void WriteSelectors(Sema &SemaRef);

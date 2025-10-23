@@ -6297,6 +6297,9 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema *SemaPtr, StringRef isysroot,
     WriteDeclsWithEffectsToVerify(*SemaPtr);
   }
 
+  if (SemaPtr)
+    WriteDeclInfos(SemaPtr->Context);
+
   // Some simple statistics
   RecordData::value_type Record[] = {NumStatements,
                                      NumMacros,
@@ -6495,6 +6498,31 @@ void ASTWriter::WriteDeclAndTypes(ASTContext &Context) {
   // Write the visible updates to DeclContexts.
   for (auto *DC : UpdatedDeclContexts)
     WriteDeclContextVisibleUpdate(Context, DC);
+}
+
+void ASTWriter::WriteDeclInfos(ASTContext &Context) {
+  Stream.EnterSubblock(DECLINFO_BLOCK_ID, /*bits for abbreviations*/ 3);
+  DeclInfoBlockStartOffset = Stream.GetCurrentBitNo();
+  while (!DeclInfosToEmit.empty()) {
+    const Decl *D = DeclInfosToEmit.front();
+    DeclInfosToEmit.pop_front();
+    WriteDeclInfo(Context, D);
+  }
+  DoneWritinDeclInfos = true;
+  Stream.ExitBlock();
+  
+  {
+    using namespace llvm;
+    auto Abbrev = std::make_shared<llvm::BitCodeAbbrev>();
+    Abbrev->Add(llvm::BitCodeAbbrevOp(DECL_INFO_OFFSET));
+    Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::Fixed, 32)); // # of declarations
+    Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::Blob)); // declarations block
+    unsigned DeclInfoOffsetAbbrev = Stream.EmitAbbrev(std::move(Abbrev));
+    {
+      RecordData::value_type Record[] = {DECL_INFO_OFFSET, DeclInfoOffsets.size()};
+      Stream.EmitRecordWithBlob(DeclInfoOffsetAbbrev, Record, bytes(DeclInfoOffsets));
+    }
+  }
 }
 
 void ASTWriter::WriteSpecializationsUpdates(bool IsPartial) {
@@ -6712,8 +6740,20 @@ void ASTWriter::WriteDeclUpdatesBlocks(ASTContext &Context,
         Record.AddVarDeclInit(VD);
       }
     }
+    // if (D->isFromASTFile()) {
+    //   llvm::errs() << "Writing Decl Update for ";
+    //   if (auto *ND = dyn_cast<NamedDecl>(D))
+    //     llvm::errs() << ND->getNameAsString() << "\n";
+    //   else
+    //     llvm::errs() << D->getDeclKindName() << "\n";
+    //   llvm::errs() << "its global decl id is " << D->getGlobalID().getModuleFileIndex() << ":" << D->getGlobalID().getLocalDeclIndex() << "\n";
+    // }
 
-    AddDeclRef(D, OffsetsRecord);
+    
+    if (D->isFromASTFile())
+      OffsetsRecord.push_back(D->getGlobalID().getRawValue());
+    else
+      AddDeclRef(D, OffsetsRecord);
     OffsetsRecord.push_back(Record.Emit(DECL_UPDATES));
   }
 }
@@ -7052,7 +7092,8 @@ LocalDeclID ASTWriter::GetDeclRef(const Decl *D) {
     if (isWritingStdCXXNamedModules() && D->getOwningModule())
       TouchedTopLevelModules.insert(D->getOwningModule()->getTopLevelModule());
 
-    return LocalDeclID(D->getGlobalID());
+    return GetDeclInfoID(D);
+    // return LocalDeclID(D->getGlobalID());
   }
 
   assert(!(reinterpret_cast<uintptr_t>(D) & 0x01) && "Invalid decl pointer");
@@ -7078,8 +7119,10 @@ LocalDeclID ASTWriter::getDeclID(const Decl *D) {
 
   // If D comes from an AST file, its declaration ID is already known and
   // fixed.
-  if (D->isFromASTFile())
-    return LocalDeclID(D->getGlobalID());
+  if (D->isFromASTFile()) {
+    return GetDeclInfoID(D);
+    // return LocalDeclID(D->getGlobalID());
+  }
 
   assert(DeclIDs.contains(D) && "Declaration not emitted!");
   return DeclIDs[D];
@@ -7117,6 +7160,31 @@ void ASTWriter::getLazyUpdates(const Decl *D) {
     UpdatedDeclContexts.insert(DC);
     UpdatedDeclContextsLazy.remove(DC);
   }
+}
+
+LocalDeclID ASTWriter::GetDeclInfoID(const Decl *D) {
+  // return LocalDeclID(D->getGlobalID());
+  assert(D->isFromASTFile());
+
+  LocalDeclID &ID = ExternalDeclInfos[D];
+  if (ID.isValid())
+    return ID;
+
+  if (DoneWritinDeclInfos) {
+    assert(false && "We shouldn't reference external decls after we wrote the decl infos");
+  }
+
+  ID = LocalDeclID::getDeclInfoID(NextDeclInfoIndex++);
+  DeclInfosToEmit.push_back(D);
+
+  // FIXME: Finer for constructor and so on
+  if (auto *ND = dyn_cast<NamedDecl>(D); ND && !DoneWritingDeclsAndTypes) {
+    RecordData Record;
+    ASTRecordWriter Writer(ND->getASTContext(), *this, Record);
+    Writer.AddDeclarationName(ND->getDeclName());
+  }
+
+  return ID;
 }
 
 void ASTWriter::associateDeclWithFile(const Decl *D, LocalDeclID ID) {
