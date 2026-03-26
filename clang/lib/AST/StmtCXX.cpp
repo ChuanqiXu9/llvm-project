@@ -123,5 +123,9 @@ CoroutineBodyStmt::CoroutineBodyStmt(CoroutineBodyStmt::CtorArgs const &Args)
   SubStmts[CoroutineBodyStmt::ReturnStmt] = Args.ReturnStmt;
   SubStmts[CoroutineBodyStmt::ReturnStmtOnAllocFailure] =
       Args.ReturnStmtOnAllocFailure;
+
   llvm::copy(Args.ParamMoves, const_cast<Stmt **>(getParamMoves().data()));
+
+  StackedAllocator = Args.StackedAllocator;
+  StackedDealloactor = Args.StackedDeallocator;
 }

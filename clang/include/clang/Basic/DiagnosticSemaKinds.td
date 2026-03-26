@@ -12963,9 +12963,26 @@ def err_coroutine_return_type : Error<
   "function returns a type %0 marked with [[clang::coro_return_type]] but is neither a coroutine nor a coroutine wrapper; "
   "non-coroutines should be marked with [[clang::coro_wrapper]] to allow returning coroutine return type"
 >;
+
 def warn_coroutine_type_aware_allocator_ignored : Warning <
   "type aware %0 will not be used for coroutine allocation">,
   InGroup<CoroTypeAwareAllocationFunction>;
+
+def warn_not_paired_stacked_allocator : Warning <
+  "stacked allocator should be paired with a stacked deallocator"
+>, InGroup<DiagGroup<"not-paired-stacked-allocator">>;
+
+def warn_incorrect_stacked_allocator_signature : Warning <
+  "stacked allocator should be declared as 'void *stacked_allocator(std::size_t, std::align_val_t);'"
+>, InGroup<DiagGroup<"incorrect-stacked-allocator-signature">>;
+
+def warn_incorrect_stacked_dellocator_signature : Warning <
+  "stacked deallocator should be declared as 'void stacked_deallocator(void *, std::align_val_t);'"
+>, InGroup<DiagGroup<"incorrect-stacked-deallocator-signature">>;
+
+def warn_align_val_not_found : Warning <
+  "std::align_val_t is not found. "
+>, InGroup<DiagGroup<"align-val-not-found">>;
 } // end of coroutines issue category
 
 let CategoryName = "Documentation Issue" in {

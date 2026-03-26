@@ -6414,8 +6414,9 @@ RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
   llvm::scope_exit AddCoroElideSafeOnExit([&] {
     if (E->isCoroElideSafe()) {
       auto *I = *CallOrInvoke;
-      if (I)
+      if (I) {
         I->addFnAttr(llvm::Attribute::CoroElideSafe);
+      }
     }
   });
 

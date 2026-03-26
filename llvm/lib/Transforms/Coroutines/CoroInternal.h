@@ -48,6 +48,7 @@ struct LowererBase {
   ConstantPointerNull *const NullPtr;
 
   LowererBase(Module &M);
+
   CallInst *makeSubFnCall(Value *Arg, int Index, Instruction *InsertPt);
 };
 

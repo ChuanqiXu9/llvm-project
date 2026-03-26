@@ -1893,6 +1893,8 @@ def int_coro_await_suspend_handle : Intrinsic<[],
                                               [llvm_ptr_ty, llvm_ptr_ty, llvm_ptr_ty],
                                               [Throws]>;
 
+def int_coro_stacked_allocator : Intrinsic<[], [llvm_ptr_ty, llvm_ptr_ty, llvm_ptr_ty], []>;
+
 // Coroutine Lowering Intrinsics. Used internally by coroutine passes.
 
 def int_coro_subfn_addr : DefaultAttrsIntrinsic<

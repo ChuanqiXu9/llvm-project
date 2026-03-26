@@ -1988,6 +1988,11 @@ static bool hasSafeElideCaller(Function &F) {
   return false;
 }
 
+static void removeStackedAllocators(const coro::Shape &Shape) {
+  for (auto *Alloc : Shape.CoroStackedAllocates)
+    Alloc->eraseFromParent();
+}
+
 void coro::SwitchABI::splitCoroutine(Function &F, coro::Shape &Shape,
                                      SmallVectorImpl<Function *> &Clones,
                                      TargetTransformInfo &TTI) {
@@ -2001,6 +2006,10 @@ static void doSplitCoroutine(Function &F, SmallVectorImpl<Function *> &Clones,
 
   auto &Shape = ABI.Shape;
   assert(Shape.CoroBegin);
+
+  // we won't elide a coroutine in another splitted coroutine. So the stacked
+  // allocators are not meaningful after split.
+  removeStackedAllocators(Shape);
 
   lowerAwaitSuspends(F, Shape);
 

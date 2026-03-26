@@ -866,6 +866,45 @@ static void emitBodyAndFallthrough(CodeGenFunction &CGF,
       CGF.EmitStmt(OnFallthrough);
 }
 
+static llvm::GlobalValue *declareIfNotDefined(CodeGenModule &CGM,
+                                              FunctionDecl *FD) {
+  StringRef Name = CGM.getMangledName(FD);
+  if (llvm::GlobalValue *LLVMFunc = CGM.GetGlobalValue(Name))
+    return LLVMFunc;
+
+  const CGFunctionInfo &FI = CGM.getTypes().arrangeGlobalDeclaration(FD);
+  auto *FTy = dyn_cast<llvm::FunctionType>(CGM.getTypes().GetFunctionType(FI));
+  if (!FTy)
+    return nullptr;
+  auto *Ret = llvm::Function::Create(FTy, llvm::Function::ExternalLinkage, Name,
+                                     &CGM.getModule());
+
+  // Emit after we declare it to make sure it will be emitted actually.
+  CGM.EmitGlobal(FD);
+
+  return Ret;
+}
+
+static void emitStackedAllocatorAndDeallocator(CodeGenFunction &CGF,
+                                               const CoroutineBodyStmt &S,
+                                               llvm::Value *PromiseAddr) {
+  FunctionDecl *StackedAllocator = S.getStackedAllocator();
+  FunctionDecl *StackedDeallocator = S.getStackedDeallocator();
+
+  if (!StackedAllocator || !StackedDeallocator)
+    return;
+
+  llvm::GlobalValue *LLVMAllocator =
+      declareIfNotDefined(CGF.CGM, StackedAllocator);
+  llvm::GlobalValue *LLVMDeallocator =
+      declareIfNotDefined(CGF.CGM, StackedDeallocator);
+  if (!LLVMAllocator || !LLVMDeallocator)
+    return;
+  CGF.Builder.CreateCall(
+      CGF.CGM.getIntrinsic(llvm::Intrinsic::coro_stacked_allocator),
+      {PromiseAddr, LLVMAllocator, LLVMDeallocator});
+}
+
 void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
   auto *NullPtr = llvm::ConstantPointerNull::get(Builder.getPtrTy());
   auto &TI = CGM.getContext().getTargetInfo();
@@ -1040,6 +1079,8 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     // coroutine return type.
     if (!GroManager.DirectEmit)
       GroManager.EmitGroConv(RetBB);
+
+    emitStackedAllocatorAndDeallocator(*this, S, PromiseAddr.getBasePointer());
   }
 
   EmitBlock(RetBB);

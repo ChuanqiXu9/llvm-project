@@ -442,6 +442,8 @@ void ASTStmtWriter::VisitCoroutineBodyStmt(CoroutineBodyStmt *CoroStmt) {
   Record.push_back(CoroStmt->getParamMoves().size());
   for (Stmt *S : CoroStmt->children())
     Record.AddStmt(S);
+  Record.AddDeclRef(CoroStmt->getStackedAllocator());
+  Record.AddDeclRef(CoroStmt->getStackedDeallocator());
   Code = serialization::STMT_COROUTINE_BODY;
 }
 

@@ -58,6 +58,7 @@ struct Shape {
   SmallVector<CoroAlignInst *, 2> CoroAligns;
   SmallVector<AnyCoroSuspendInst *, 4> CoroSuspends;
   SmallVector<CoroAwaitSuspendInst *, 4> CoroAwaitSuspends;
+  SmallVector<CoroStackedAllocatorInst *, 4> CoroStackedAllocates;
   SmallVector<CallInst *, 2> SymmetricTransfers;
 
   // Values invalidated by replaceSwiftErrorOps()
@@ -71,6 +72,7 @@ struct Shape {
     CoroAligns.clear();
     CoroSuspends.clear();
     CoroAwaitSuspends.clear();
+    CoroStackedAllocates.clear();
     SymmetricTransfers.clear();
 
     SwiftErrorOps.clear();

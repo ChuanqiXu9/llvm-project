@@ -15,8 +15,10 @@
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Transforms/Coroutines/CoroInstr.h"
 #include <optional>
 
 using namespace llvm;
@@ -74,6 +76,8 @@ private:
   SmallVector<CoroAllocInst *, 1> CoroAllocs;
   SmallVector<CoroSubFnInst *, 4> ResumeAddr;
   DenseMap<CoroBeginInst *, SmallVector<CoroSubFnInst *, 4>> DestroyAddr;
+
+  Value *allocateFrameViaStackedAllocator(uint64_t FrameSize, Align FrameAlign);
 };
 } // end anonymous namespace
 
@@ -216,26 +220,134 @@ void CoroIdElider::elideHeapAllocations(uint64_t FrameSize, Align FrameAlign) {
     CA->eraseFromParent();
   }
 
-  // FIXME: Design how to transmit alignment information for every alloca that
-  // is spilled into the coroutine frame and recreate the alignment information
-  // here. Possibly we will need to do a mini SROA here and break the coroutine
-  // frame into individual AllocaInst recreating the original alignment.
-  const DataLayout &DL = FEI.ContainingFunction->getDataLayout();
-  auto FrameTy = ArrayType::get(Type::getInt8Ty(C), FrameSize);
-  auto *Frame = new AllocaInst(FrameTy, DL.getAllocaAddrSpace(), "", InsertPt);
-  Frame->setAlignment(FrameAlign);
-  auto *FrameVoidPtr =
-      new BitCastInst(Frame, PointerType::getUnqual(C), "vFrame", InsertPt);
+  // Try to use stacked allocation if available.
+  Value *FramePtr = allocateFrameViaStackedAllocator(FrameSize, FrameAlign);
+
+  // If stacked allocation is not available, fall back to alloca.
+  if (!FramePtr) {
+    const DataLayout &DL = FEI.ContainingFunction->getDataLayout();
+    auto FrameTy = ArrayType::get(Type::getInt8Ty(C), FrameSize);
+    auto *Frame = new AllocaInst(FrameTy, DL.getAllocaAddrSpace(), "", InsertPt);
+    Frame->setAlignment(FrameAlign);
+    FramePtr = new BitCastInst(Frame, PointerType::getUnqual(C), "vFrame", InsertPt);
+  }
 
   for (auto *CB : CoroBegins) {
     coro::elideCoroFree(CB);
-    CB->replaceAllUsesWith(FrameVoidPtr);
+    CB->replaceAllUsesWith(FramePtr);
     CB->eraseFromParent();
   }
 
   // Since now coroutine frame lives on the stack we need to make sure that
   // any tail call referencing it, must be made non-tail call.
-  removeTailCallAttribute(Frame, AA);
+  if (auto *AI = dyn_cast<AllocaInst>(FramePtr))
+    removeTailCallAttribute(AI, AA);
+}
+
+Value *CoroIdElider::allocateFrameViaStackedAllocator(uint64_t FrameSize,
+                                                        Align FrameAlign) {
+  if (CoroBegins.empty())
+    return nullptr;
+
+  // Find a CoroStackedAllocatorInst whose promise matches one of our CoroBegins.
+  CoroStackedAllocatorInst *StackedAlloc = nullptr;
+  CoroBeginInst *MatchingCoroBegin = nullptr;
+
+  for (Instruction &I : instructions(*FEI.ContainingFunction)) {
+    auto *S = dyn_cast<CoroStackedAllocatorInst>(&I);
+    if (!S)
+      continue;
+
+    Value *Promise = S->getPromise();
+
+    // The promise is typically obtained via llvm.coro.promise intrinsic.
+    // If so, extract the frame pointer and compare with CoroBegin.
+    Value *FrameFromPromise = nullptr;
+    if (auto *CPI = dyn_cast<CoroPromiseInst>(Promise)) {
+      // coro.promise returns the promise address from the frame (when FromArg is false)
+      // So the first argument (index 0) is the coroutine frame pointer
+      FrameFromPromise = CPI->getArgOperand(0);
+    } else {
+      // If not a coro.promise, try direct comparison
+      FrameFromPromise = Promise;
+    }
+
+    // Check if the frame matches one of our CoroBegins.
+    for (auto *CB : CoroBegins) {
+      if (FrameFromPromise == CB || 
+          CB->stripPointerCasts() == FrameFromPromise->stripPointerCasts()) {
+        StackedAlloc = S;
+        MatchingCoroBegin = CB;
+        break;
+      }
+    }
+    if (StackedAlloc)
+      break;
+  }
+
+  if (!StackedAlloc)
+    return nullptr;
+
+  // Use lifetime intrinsics to determine where to insert allocation
+  // and deallocation calls.
+  Value *Promise = StackedAlloc->getPromise();
+  Instruction *LifetimeStart = nullptr;
+  SmallVector<Instruction *, 4> LifetimeEnds;
+
+  for (User *U : Promise->users()) {
+    auto *II = dyn_cast<IntrinsicInst>(U);
+    if (!II)
+      continue;
+
+    if (II->getIntrinsicID() == Intrinsic::lifetime_start) {
+      if (DT.dominates(II, MatchingCoroBegin)) {
+        if (LifetimeStart)
+          return nullptr; // Multiple lifetime.start, give up.
+        LifetimeStart = II;
+      }
+    }
+  }
+
+  if (!LifetimeStart)
+    return nullptr;
+
+  for (User *U : Promise->users()) {
+    auto *II = dyn_cast<IntrinsicInst>(U);
+    if (!II || II->getIntrinsicID() != Intrinsic::lifetime_end)
+      continue;
+    if (DT.dominates(LifetimeStart, II))
+      LifetimeEnds.push_back(II);
+  }
+
+  if (LifetimeEnds.empty())
+    return nullptr;
+
+  Function *Alloc = StackedAlloc->getAllocator();
+  Function *Dealloc = StackedAlloc->getDeallocator();
+  if (!Alloc || !Dealloc)
+    return nullptr;
+
+  // The allocator should have 3 arguments: promise, size, align
+  // The deallocator should have 3 arguments: promise, ptr, align
+  if (Alloc->arg_size() != 3 || Dealloc->arg_size() != 3)
+    return nullptr;
+
+  auto *Size = ConstantInt::get(Alloc->getArg(1)->getType(), FrameSize);
+  auto *AlignVal = ConstantInt::get(Alloc->getArg(2)->getType(), FrameAlign.value());
+
+  // Insert allocation call at lifetime.start
+  CallInst *Frame = CallInst::Create(
+      Alloc->getFunctionType(), Alloc, {Promise, Size, AlignVal}, "",
+      LifetimeStart->getIterator());
+
+  // Insert deallocation calls at each lifetime.end
+  for (auto *LifetimeEnd : LifetimeEnds) {
+    CallInst::Create(Dealloc->getFunctionType(), Dealloc,
+                     {Promise, Frame, AlignVal}, "",
+                     LifetimeEnd->getIterator());
+  }
+
+  return Frame;
 }
 
 bool CoroIdElider::canCoroBeginEscape(
@@ -272,7 +384,8 @@ bool CoroIdElider::canCoroBeginEscape(
     // The reason why we still judge it is we want to make LLVM Coroutine in
     // switch ABIs to be self contained as much as possible instead of a
     // by-product of C++20 Coroutines.
-    EscapingBBs.insert(cast<Instruction>(U)->getParent());
+    auto *UserBB = cast<Instruction>(U)->getParent();
+    EscapingBBs.insert(UserBB);
   }
 
   bool PotentiallyEscaped = false;
@@ -285,7 +398,8 @@ bool CoroIdElider::canCoroBeginEscape(
     // A Path insensitive marker to test whether the coro.begin escapes.
     // It is intentional to make it path insensitive while it may not be
     // precise since we don't want the process to be too slow.
-    PotentiallyEscaped |= EscapingBBs.count(BB);
+    if (EscapingBBs.count(BB))
+      PotentiallyEscaped = true;
 
     if (TIs.count(BB)) {
       if (isa<ReturnInst>(BB->getTerminator()) || PotentiallyEscaped)
@@ -295,7 +409,6 @@ bool CoroIdElider::canCoroBeginEscape(
       // by the coroutine frame can be released by stack unwinding
       // automatically. So we can think the coro.begin doesn't escape if it
       // exits the function by exceptional terminator.
-
       continue;
     }
 

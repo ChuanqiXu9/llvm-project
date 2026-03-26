@@ -15,13 +15,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Coroutines/CoroAnnotationElide.h"
+#include "llvm/Transforms/Coroutines/CoroInstr.h"
 
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LazyCallGraph.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/IR/Analysis.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/BranchProbability.h"
@@ -50,8 +53,9 @@ static Instruction *getFirstNonAllocaInTheEntryBlock(Function *F) {
 
 // Create an alloca in the caller, using FrameSize and FrameAlign as the callee
 // coroutine's activation frame.
-static Value *allocateFrameInCaller(Function *Caller, uint64_t FrameSize,
-                                    Align FrameAlign) {
+static Value *allocateFrameInCallerByAlloca(Function *Caller,
+                                            uint64_t FrameSize,
+                                            Align FrameAlign) {
   LLVMContext &C = Caller->getContext();
   BasicBlock::iterator InsertPt =
       getFirstNonAllocaInTheEntryBlock(Caller)->getIterator();
@@ -62,17 +66,101 @@ static Value *allocateFrameInCaller(Function *Caller, uint64_t FrameSize,
   return Frame;
 }
 
+static Value *allocateFrameInCallerByStackedAllocation(CallBase *CB,
+                                                       Function *Caller,
+                                                       uint64_t FrameSize,
+                                                       Align FrameAlign) {
+  CoroStackedAllocatorInst *StackedAlloc = nullptr;
+  for (Instruction &I : instructions(*Caller))
+    if (auto *S = dyn_cast<CoroStackedAllocatorInst>(&I)) {
+      StackedAlloc = S;
+      break;
+    }
+
+  if (!StackedAlloc)
+    return nullptr;
+
+  // Use the lifetime.end intrinsic to find end of the lifetime of the targetted
+  // object.
+
+  llvm::Value *Object = nullptr;
+  if (CB->getType()->isVoidTy()) {
+    if (!CB->hasStructRetAttr())
+      return nullptr;
+
+    Object = CB->getArgOperand(0);
+  } else
+    Object = CB;
+
+  // Use lifetime information to indicate the lifetime range of the object.
+  DominatorTree Dom(*Caller);
+  llvm::Instruction *LifetimeStart = nullptr;
+  llvm::SmallVector<llvm::Instruction *> LifetimeEnds;
+
+  for (User *U : Object->users()) {
+    auto *II = dyn_cast<IntrinsicInst>(U);
+    if (!II || II->getIntrinsicID() != Intrinsic::lifetime_start)
+      continue;
+
+    if (Dom.dominates(II, CB)) {
+      // There are multiple lifetime start that dominates the call.
+      // Complex case. Giveup.
+      if (LifetimeStart)
+        return nullptr;
+
+      LifetimeStart = II;
+    }
+  }
+
+  if (!LifetimeStart)
+    return nullptr;
+
+  for (User *U : Object->users()) {
+    auto *II = dyn_cast<IntrinsicInst>(U);
+
+    if (!II || II->getIntrinsicID() != Intrinsic::lifetime_end ||
+        !Dom.dominates(LifetimeStart, II))
+      continue;
+
+    LifetimeEnds.push_back(II);
+  }
+
+  if (LifetimeEnds.empty())
+    return nullptr;
+
+  Value *Promise = StackedAlloc->getPromise();
+  Function *Alloc = StackedAlloc->getAllocator();
+  Function *Dealloc = StackedAlloc->getDeallocator();
+  assert(Alloc);
+  assert(Dealloc);
+  assert(Alloc->arg_size() == 3);
+  assert(Dealloc->arg_size() == 3);
+
+  auto Size = ConstantInt::get(Alloc->getArg(1)->getType(), FrameSize);
+  auto Align =
+      ConstantInt::get(Alloc->getArg(2)->getType(), FrameAlign.value());
+  CallInst *Frame = CallInst::Create(Alloc->getFunctionType(), Alloc,
+                                     {Promise, Size, Align}, "",
+                                     LifetimeStart->getIterator());
+  auto DebugLoc = CB->getDebugLoc();
+  Frame->setDebugLoc(DebugLoc);
+
+  for (auto *LifetimeEnd : LifetimeEnds) {
+    auto *DeallocInst = CallInst::Create(Dealloc->getFunctionType(), Dealloc,
+                                         {Promise, Frame, Align}, "",
+                                         LifetimeEnd->getNextNode()->getIterator());
+    DeallocInst->setDebugLoc(DebugLoc);
+  }
+
+  return Frame;
+}
+
 // Given a call or invoke instruction to the elide safe coroutine, this function
 // does the following:
-//  - Allocate a frame for the callee coroutine in the caller using alloca.
 //  - Replace the old CB with a new Call or Invoke to `NewCallee`, with the
 //    pointer to the frame as an additional argument to NewCallee.
 static void processCall(CallBase *CB, Function *Caller, Function *NewCallee,
-                        uint64_t FrameSize, Align FrameAlign) {
-  // TODO: generate the lifetime intrinsics for the new frame. This will require
-  // introduction of two pesudo lifetime intrinsics in the frontend around the
-  // `co_await` expression and convert them to real lifetime intrinsics here.
-  auto *FramePtr = allocateFrameInCaller(Caller, FrameSize, FrameAlign);
+                        Value *FramePtr) {
   auto NewCBInsertPt = CB->getIterator();
   llvm::CallBase *NewCB = nullptr;
   SmallVector<Value *, 4> NewArgs;
@@ -179,7 +267,14 @@ PreservedAnalyses CoroAnnotationElidePass::run(LazyCallGraph::SCC &C,
         // If CallerC is nullptr, it means LazyCallGraph hasn't visited Caller
         // yet. Skip the call graph update.
         auto ShouldUpdateCallGraph = !!CallerC;
-        processCall(CB, Caller, NewCallee, FrameSize, FrameAlign);
+
+        Value *FramePtr = allocateFrameInCallerByStackedAllocation(
+            CB, Caller, FrameSize, FrameAlign);
+        if (!FramePtr)
+          FramePtr = allocateFrameInCallerByAlloca(Caller, FrameSize,
+                                                   FrameAlign);
+
+        processCall(CB, Caller, NewCallee, FramePtr);
 
         ORE.emit([&]() {
           return OptimizationRemark(DEBUG_TYPE, "CoroAnnotationElide", Caller)

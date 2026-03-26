@@ -250,6 +250,9 @@ void coro::Shape::analyze(Function &F,
         CoroBegin = CB;
         break;
       }
+      case Intrinsic::coro_stacked_allocator:
+        CoroStackedAllocates.push_back(cast<CoroStackedAllocatorInst>(II));
+        break;
       case Intrinsic::coro_end_async:
       case Intrinsic::coro_end:
         CoroEnds.push_back(cast<AnyCoroEndInst>(II));

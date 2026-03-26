@@ -8932,6 +8932,22 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
         return StmtError();
       Builder.ReturnStmt = Res.get();
     }
+
+    if (auto *StackedAllocator = S->getStackedAllocator()) {
+      DeclResult Res = getDerived().TransformDecl(
+          StackedAllocator->getLocation(), StackedAllocator);
+      if (Res.isInvalid())
+        return StmtError();
+      Builder.StackedAllocator = cast<FunctionDecl>(Res.get());
+    }
+
+    if (auto *StackedDeallocator = S->getStackedDeallocator()) {
+      DeclResult Res = getDerived().TransformDecl(
+          StackedDeallocator->getLocation(), StackedDeallocator);
+      if (Res.isInvalid())
+        return StmtError();
+      Builder.StackedDeallocator = cast<FunctionDecl>(Res.get());
+    }
   }
 
   return getDerived().RebuildCoroutineBodyStmt(Builder);

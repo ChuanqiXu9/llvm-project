@@ -335,6 +335,9 @@ class CoroutineBodyStmt final
   };
   unsigned NumParams;
 
+  FunctionDecl *StackedAllocator = nullptr;
+  FunctionDecl *StackedDealloactor = nullptr;
+
   friend class ASTStmtReader;
   friend class ASTReader;
   friend TrailingObjects;
@@ -358,6 +361,8 @@ public:
     Expr *ReturnValue = nullptr;
     Stmt *ReturnStmt = nullptr;
     Stmt *ReturnStmtOnAllocFailure = nullptr;
+    FunctionDecl *StackedAllocator = nullptr;
+    FunctionDecl *StackedDeallocator = nullptr;
     ArrayRef<Stmt *> ParamMoves;
   };
 
@@ -453,6 +458,9 @@ public:
                              getStoredStmts() + SubStmt::FirstParamMove +
                                  NumParams);
   }
+
+  FunctionDecl *getStackedAllocator() const { return StackedAllocator; }
+  FunctionDecl *getStackedDeallocator() const { return StackedDealloactor; }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CoroutineBodyStmtClass;

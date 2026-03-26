@@ -1260,7 +1260,7 @@ bool CoroutineStmtBuilder::buildDependentStatements() {
          "coroutine cannot have a dependent promise type");
   this->IsValid = makeOnException() && makeOnFallthrough() &&
                   makeGroDeclAndReturnStmt() && makeReturnOnAllocFailure() &&
-                  makeNewAndDeleteExpr();
+                  makeNewAndDeleteExpr() && makeStackedAllocator();
   return this->IsValid;
 }
 
@@ -1699,6 +1699,73 @@ bool CoroutineStmtBuilder::makeNewAndDeleteExpr() {
   this->Allocate = NewExpr.get();
   this->Deallocate = DeleteExpr.get();
 
+  return true;
+}
+
+bool CoroutineStmtBuilder::makeStackedAllocator() {
+  assert(!IsPromiseDependentType &&
+         "cannot make statement while the promise type is dependent");
+
+  bool FoundStackedAllocator = false;
+  bool FoundStackedDeallocator = false;
+  LookupResult StackedAllocatorRes = lookupMember(
+      S, "stacked_allocate", PromiseRecordDecl, Loc, FoundStackedAllocator);
+  LookupResult StackedDeallocatorRes = lookupMember(
+      S, "stacked_deallocate", PromiseRecordDecl, Loc, FoundStackedDeallocator);
+
+  // It is fine if they are not presented.
+  if (!FoundStackedAllocator && !FoundStackedDeallocator)
+    return true;
+
+  auto *StackedAllocator = StackedAllocatorRes.getAsSingle<FunctionDecl>();
+  auto *StackedDeallocator = StackedDeallocatorRes.getAsSingle<FunctionDecl>();
+
+  if (!StackedAllocator && !StackedDeallocator)
+    return true;
+
+  if (!StackedAllocator || !StackedDeallocator) {
+    SourceLocation AllocateLoc = StackedAllocator
+                                     ? StackedAllocator->getLocation()
+                                     : StackedDeallocator->getLocation();
+    S.Diag(AllocateLoc, diag::warn_not_paired_stacked_allocator);
+    return true;
+  }
+
+  if (!S.getStdAlignValT()) {
+    S.Diag(StackedAllocator->getLocation(), diag::warn_align_val_not_found);
+    return true;
+  }
+
+  ASTContext &Ctx = S.getASTContext();
+
+  QualType StdAlignValType = Ctx.getCanonicalTagType(S.getStdAlignValT());
+
+  if (StackedAllocator->getNumParams() != 2 ||
+      !StackedAllocator->getReturnType()->isVoidPointerType() ||
+      !Ctx.hasSameType(StackedAllocator->getParamDecl(0)->getType(),
+                       Ctx.getSizeType()) ||
+      !Ctx.hasSameType(StackedAllocator->getParamDecl(1)->getType(),
+                       StdAlignValType)) {
+    S.Diag(StackedAllocator->getLocation(),
+           diag::warn_incorrect_stacked_allocator_signature);
+    return true;
+  }
+
+  if (StackedDeallocator->getNumParams() != 2 ||
+      !StackedDeallocator->getReturnType()->isVoidType() ||
+      !StackedDeallocator->getParamDecl(0)->getType()->isVoidPointerType() ||
+      !Ctx.hasSameType(StackedDeallocator->getParamDecl(1)->getType(),
+                       StdAlignValType)) {
+    S.Diag(StackedAllocator->getLocation(),
+           diag::warn_incorrect_stacked_dellocator_signature);
+    return true;
+  }
+
+  S.MarkFunctionReferenced(Loc, StackedAllocator);
+  S.MarkFunctionReferenced(Loc, StackedDeallocator);
+
+  this->StackedAllocator = StackedAllocator;
+  this->StackedDeallocator = StackedDeallocator;
   return true;
 }
 

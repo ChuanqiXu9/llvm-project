@@ -112,6 +112,35 @@ public:
   }
 };
 
+class LLVM_LIBRARY_VISIBILITY CoroStackedAllocatorInst : public IntrinsicInst {
+  enum { PromiseArg, AllocatorArg, DeallocatorArg };
+
+public:
+  Value *getPromise() const { return getArgOperand(PromiseArg); }
+
+  Function *getAllocator() const {
+    return cast<Function>(getArgOperand(AllocatorArg));
+  }
+
+  Function *getDeallocator() const {
+    return cast<Function>(getArgOperand(DeallocatorArg));
+  }
+
+  // Methods to support type inquiry through isa, cast, and dyn_cast:
+  static bool classof(const CallBase *CB) {
+    if (const Function *CF = CB->getCalledFunction()) {
+      auto IID = CF->getIntrinsicID();
+      return IID == Intrinsic::coro_stacked_allocator;
+    }
+
+    return false;
+  }
+
+  static bool classof(const Value *V) {
+    return isa<CallBase>(V) && classof(cast<CallBase>(V));
+  }
+};
+
 /// This represents a common base class for llvm.coro.id instructions.
 class AnyCoroIdInst : public IntrinsicInst {
 public:

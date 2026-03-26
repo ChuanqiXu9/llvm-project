@@ -479,6 +479,9 @@ void ASTStmtReader::VisitCoroutineBodyStmt(CoroutineBodyStmt *S) {
   for (unsigned i = 0;
        i < CoroutineBodyStmt::SubStmt::FirstParamMove + S->NumParams; ++i)
     StoredStmts[i] = Record.readSubStmt();
+
+  S->StackedAllocator = readDeclAs<FunctionDecl>();
+  S->StackedDealloactor = readDeclAs<FunctionDecl>();
 }
 
 void ASTStmtReader::VisitCoreturnStmt(CoreturnStmt *S) {
