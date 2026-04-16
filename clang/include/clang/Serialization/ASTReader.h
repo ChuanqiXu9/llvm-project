@@ -108,6 +108,12 @@ class TypedefNameDecl;
 class ValueDecl;
 class VarDecl;
 
+namespace serialization {
+namespace reader {
+struct DeclInfoLookupTable;
+}
+} // namespace serialization
+
 /// Abstract interface for callback invocations by the ASTReader.
 ///
 /// While reading an AST file, the ASTReader will call the methods of the
@@ -695,13 +701,17 @@ private:
   using SpecLookupTableTy =
       llvm::DenseMap<const Decl *,
                      serialization::reader::LazySpecializationInfoLookupTable>;
-  /// Map from decls to specialized decls.
+/// Map from decls to specialized decls.
   SpecLookupTableTy SpecializationsLookups;
   /// Split partial specialization from specialization to speed up lookups.
   SpecLookupTableTy PartialSpecializationsLookups;
 
+  /// Global lookup table for DeclInfoHash -> GlobalDeclID.
+  /// This table merges lookup tables from all loaded modules.
+  std::unique_ptr<serialization::reader::DeclInfoLookupTable> DeclInfoLookup;
+
   bool LoadExternalSpecializationsImpl(SpecLookupTableTy &SpecLookups,
-                                       const Decl *D);
+                                        const Decl *D);
   bool LoadExternalSpecializationsImpl(SpecLookupTableTy &SpecLookups,
                                        const Decl *D,
                                        ArrayRef<TemplateArgument> TemplateArgs);
@@ -1594,6 +1604,22 @@ private:
   llvm::Error ReadSourceManagerBlock(ModuleFile &F);
   SourceLocation getImportLocation(ModuleFile *F);
 
+  /// Handle DECL_INFO_PLACEHOLDERS record.
+  llvm::Error handleDeclInfoPlaceholders(ModuleFile &F, StringRef Blob);
+
+  /// Load DeclInfos from DECL_INFOS record.
+  /// RecordBitNo is the record position in AST_BLOCK.
+  llvm::Error loadDeclInfos(ModuleFile &F, uint64_t RecordBitNo);
+
+  /// Load DeclInfo lookup table from DECLINFO_LOOKUP_TABLE record.
+  /// RecordBitNo is the record position in AST_BLOCK.
+  /// Called from handleDeclInfoPlaceholders to ensure the table is ready early.
+  llvm::Error loadDeclInfoLookupTable(ModuleFile &F, uint64_t RecordBitNo);
+
+  /// Load local declaration hashes from DECL_HASHES record.
+  llvm::Error loadDeclHashes(ModuleFile &F, const RecordData &Record,
+                             StringRef Blob);
+
   /// The first element is `std::nullopt` if relocation check should be skipped.
   /// Otherwise, the optional holds a pointer to the discovered module.
   /// The pointer can be `nullptr` if the discovery was unsuccessful.
@@ -2142,7 +2168,7 @@ public:
 
   /// Map from a local declaration ID within a given module to a
   /// global declaration ID.
-  GlobalDeclID getGlobalDeclID(ModuleFile &F, LocalDeclID LocalID) const;
+  GlobalDeclID getGlobalDeclID(ModuleFile &F, LocalDeclID LocalID);
 
   /// Returns true if global DeclID \p ID originated from module \p M.
   bool isDeclIDFromModule(GlobalDeclID ID, ModuleFile &M) const;
@@ -2154,6 +2180,17 @@ public:
 
   /// Returns the source location for the decl \p ID.
   SourceLocation getSourceLocationForDeclID(GlobalDeclID ID);
+
+  /// Resolve a DeclInfoID to a GlobalDeclID.
+  /// \param F The module file that contains the DeclInfo records.
+  /// \param ID The DeclInfoID to resolve.
+  /// This looks up the DeclInfo from F's DECLINFO_BLOCK, then uses the Hash
+  /// to find the corresponding LocalDeclID in the target module's lookup table.
+  GlobalDeclID resolveDeclInfoID(ModuleFile &F, DeclInfoID ID);
+
+  /// Get a declaration hash stored in the owning module file.
+  std::optional<uint64_t> getStoredDeclHash(GlobalDeclID ID) const;
+  std::optional<uint64_t> getStoredDeclHash(const Decl *D) const;
 
   /// Resolve a declaration ID into a declaration, potentially
   /// building a new declaration.

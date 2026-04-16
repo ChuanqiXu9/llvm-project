@@ -107,9 +107,13 @@ public:
   /// should use LocalDeclID or GlobalDeclID.
   using DeclID = uint64_t;
 
+  /// The mask for the DeclInfoID flag (bit 31 of the low 32 bits).
+  static constexpr DeclID DeclInfoFlagMask = DeclID(1) << 31;
+  static constexpr DeclID LocalIndexMask = (DeclID(1) << 31) - 1;
+
 protected:
-  DeclIDBase() : ID(PREDEF_DECL_NULL_ID) {}
-  explicit DeclIDBase(DeclID ID) : ID(ID) {}
+  constexpr DeclIDBase() : ID(PREDEF_DECL_NULL_ID) {}
+  explicit constexpr DeclIDBase(DeclID ID) : ID(ID) {}
 
 public:
   DeclID getRawValue() const { return ID; }
@@ -122,9 +126,14 @@ public:
 
   bool isInvalid() const { return ID == PREDEF_DECL_NULL_ID; }
 
+  /// Returns true if this is a DeclInfoID (used for external declaration references).
+  bool isDeclInfo() const { return (ID & DeclInfoFlagMask) != 0; }
+
   unsigned getModuleFileIndex() const { return ID >> 32; }
 
-  unsigned getLocalDeclIndex() const;
+  /// Returns the local index. For DeclInfoID, this returns the LocalDeclInfoIndex.
+  /// The DeclInfoFlag is masked out.
+  unsigned getLocalDeclIndex() const { return ID & LocalIndexMask; }
 
   // The DeclID may be compared with predefined decl ID.
   friend bool operator==(const DeclIDBase &LHS, const DeclID &RHS) {
@@ -175,18 +184,24 @@ class ASTWriter;
 class ASTReader;
 namespace serialization {
 class ModuleFile;
+namespace reader {
+class DeclInfoLookupTrait;
+} // namespace reader
 } // namespace serialization
 
 class LocalDeclID : public DeclIDBase {
   using Base = DeclIDBase;
 
+protected:
   LocalDeclID(PredefinedDeclIDs ID) : Base(ID) {}
-  explicit LocalDeclID(DeclID ID) : Base(ID) {}
+  LocalDeclID(DeclID ID) : Base(ID) {}
 
   // Every Decl ID is a local decl ID to the module being writing in ASTWriter.
   friend class ASTWriter;
+  friend class ASTReader;
   friend class GlobalDeclID;
   friend struct llvm::DenseMapInfo<clang::LocalDeclID>;
+  friend class serialization::reader::DeclInfoLookupTrait;
 
 public:
   LocalDeclID() : Base() {}
@@ -212,16 +227,63 @@ class GlobalDeclID : public DeclIDBase {
   using Base = DeclIDBase;
 
 public:
-  GlobalDeclID() : Base() {}
-  explicit GlobalDeclID(DeclID ID) : Base(ID) {}
+  constexpr GlobalDeclID() : Base() {}
+  explicit constexpr GlobalDeclID(DeclID ID) : Base(ID) {}
 
-  explicit GlobalDeclID(unsigned ModuleFileIndex, unsigned LocalID)
+  constexpr GlobalDeclID(unsigned ModuleFileIndex, unsigned LocalID)
       : Base((DeclID)ModuleFileIndex << 32 | (DeclID)LocalID) {}
 
   // For DeclIDIterator<GlobalDeclID> to be able to convert a GlobalDeclID
   // to a LocalDeclID.
   explicit operator LocalDeclID() const { return LocalDeclID(this->ID); }
 };
+
+/// DeclInfoID is a subclass of LocalDeclID used to reference external
+/// declarations from other modules via DeclInfo records.
+///
+/// DeclInfoID encodes:
+/// - DeclInfoFlag (bit 31): Always 1 to indicate this is a DeclInfoID
+/// - LocalDeclInfoIndex (0-30 bits): Index into DeclInfo array
+///
+/// Unlike normal LocalDeclID, DeclInfoID does not encode ModuleFileIndex.
+/// Instead, ModuleIndex is stored in the DeclInfo record.
+///
+/// DeclInfoID is created by ASTWriter when referencing external declarations.
+/// ASTReader resolves DeclInfoID to the actual DeclID via lookup tables
+/// during LocalDeclID -> GlobalDeclID conversion.
+class DeclInfoID : public LocalDeclID {
+  using Base = LocalDeclID;
+
+public:
+  /// Default constructor.
+  DeclInfoID() : LocalDeclID() {}
+
+  /// Construct a DeclInfoID with the given LocalDeclInfoIndex.
+  /// DeclInfoFlag (bit 31) is set to indicate this is a DeclInfoID.
+  explicit DeclInfoID(uint32_t LocalDeclInfoIndex)
+      : Base(DeclInfoFlagMask | LocalDeclInfoIndex) {
+    assert(LocalDeclInfoIndex < (1u << 31) && "LocalDeclInfoIndex too large");
+  }
+
+  /// Convert from LocalDeclID with validation.
+  static DeclInfoID fromLocalDeclID(LocalDeclID LID) {
+    assert(LID.isDeclInfo() && "LocalDeclID is not a DeclInfoID");
+    return DeclInfoID(LID.getLocalDeclIndex());
+  }
+
+  /// Get the LocalDeclInfoIndex.
+  uint32_t getLocalDeclInfoIndex() const { return getLocalDeclIndex(); }
+
+private:
+  // Private constructor for fromLocalDeclID
+  explicit DeclInfoID(DeclID ID) : LocalDeclID(ID) {}
+};
+
+/// Special DeclInfoID value representing the translation unit context.
+/// Used when a declaration has no parent context (TranslationUnitDecl).
+/// Value: LocalDeclInfoIndex=0x7FFFFFFF.
+static const DeclInfoID TRANSLATION_UNIT_DECL_INFO =
+    DeclInfoID(0x7FFFFFFFu);
 
 /// A helper iterator adaptor to convert the iterators to
 /// `SmallVector<SomeDeclID>` to the iterators to `SmallVector<OtherDeclID>`.
@@ -282,6 +344,39 @@ template <> struct DenseMapInfo<clang::LocalDeclID> {
   }
 
   static bool isEqual(const LocalDeclID &L, const LocalDeclID &R) {
+    return L == R;
+  }
+};
+
+template <> struct DenseMapInfo<clang::DeclInfoID> {
+  using DeclInfoID = clang::DeclInfoID;
+  using DeclID = typename DeclInfoID::DeclID;
+
+static DeclInfoID getEmptyKey() {
+    // Create a DeclInfoID with DeclInfoFlag set
+    DeclID RawID = DenseMapInfo<DeclID>::getEmptyKey();
+    // Ensure the DeclInfoFlag is set for empty key
+    if (!(RawID & clang::DeclIDBase::DeclInfoFlagMask))
+      RawID |= clang::DeclIDBase::DeclInfoFlagMask;
+    // Extract the LocalDeclInfoIndex from the raw value
+    return DeclInfoID(static_cast<uint32_t>(RawID & clang::DeclIDBase::LocalIndexMask));
+  }
+
+  static DeclInfoID getTombstoneKey() {
+    // Create a DeclInfoID with DeclInfoFlag set
+    DeclID RawID = DenseMapInfo<DeclID>::getTombstoneKey();
+    // Ensure the DeclInfoFlag is set for tombstone key
+    if (!(RawID & clang::DeclIDBase::DeclInfoFlagMask))
+      RawID |= clang::DeclIDBase::DeclInfoFlagMask;
+    // Extract the LocalDeclInfoIndex from the raw value
+    return DeclInfoID(static_cast<uint32_t>(RawID & clang::DeclIDBase::LocalIndexMask));
+  }
+
+  static unsigned getHashValue(const DeclInfoID &Key) {
+    return DenseMapInfo<DeclID>::getHashValue(Key.getRawValue());
+  }
+
+  static bool isEqual(const DeclInfoID &L, const DeclInfoID &R) {
     return L == R;
   }
 };

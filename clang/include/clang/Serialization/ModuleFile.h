@@ -498,6 +498,19 @@ public:
   /// module.
   SmallVector<uint64_t, 1> ObjCCategories;
 
+  // === DeclInfo (for external declaration references) ===
+
+  /// Total number of DeclInfo records in this module.
+  unsigned LocalNumDeclInfos = 0;
+
+  /// DeclInfos blob data: each entry is Kind(1 byte) + Hash(8 bytes) = 9 bytes.
+  /// Ordered by LocalDeclInfoIndex.
+  StringRef DeclInfosBlob;
+
+  /// Hashes of local declarations, indexed by local declaration index.
+  const UnalignedUInt64 *DeclHashes = nullptr;
+
+  
   // === Types ===
 
   /// The number of types in this AST file.

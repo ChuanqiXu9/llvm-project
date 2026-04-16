@@ -17,7 +17,9 @@
 #include "clang/AST/DeclarationName.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Serialization/ASTBitCodes.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/OnDiskHashTable.h"
@@ -409,6 +411,71 @@ private:
 /// The on-disk hash table used for known header files.
 using HeaderFileInfoLookupTable =
     llvm::OnDiskChainedHashTable<HeaderFileInfoTrait>;
+
+/// Trait class for DeclInfoLookupTable MultiOnDiskHashTable.
+/// Used to map DeclInfoHash to GlobalDeclID.
+class DeclInfoLookupTrait {
+  ASTReader &Reader;
+  ModuleFile &F;
+
+public:
+  using key_type = uint64_t;
+  using key_type_ref = uint64_t;
+  using internal_key_type = uint64_t;
+  using external_key_type = uint64_t;
+  using data_type = GlobalDeclID;
+  using data_type_ref = GlobalDeclID;
+  using hash_value_type = uint64_t;
+  using offset_type = unsigned;
+  using file_type = ModuleFile *;
+
+  static const int MaxTables = 4;
+
+  /// Builder for data_type. Since data_type is a single GlobalDeclID,
+  /// we only insert the first valid ID.
+  struct data_type_builder {
+    data_type &Data;
+    data_type_builder(data_type &D) : Data(D) {}
+
+    void insert(GlobalDeclID ID) {
+      if (!Data.isValid())
+        Data = ID;
+    }
+  };
+
+  explicit DeclInfoLookupTrait(ASTReader &Reader, ModuleFile &F)
+      : Reader(Reader), F(F) {}
+
+  static hash_value_type ComputeHash(key_type_ref Key) { return Key; }
+
+  static internal_key_type GetInternalKey(external_key_type Key) { return Key; }
+  static external_key_type GetExternalKey(internal_key_type Key) { return Key; }
+
+  static std::pair<offset_type, offset_type>
+  ReadKeyDataLength(const unsigned char *&Data);
+
+  static key_type ReadKey(const unsigned char *Data, offset_type Length) {
+    using namespace llvm::support;
+    return endian::read<uint64_t>(Data, llvm::endianness::little);
+  }
+
+  void ReadDataInto(key_type_ref Key, const unsigned char *Data,
+                    unsigned DataLen, data_type_builder &Val);
+
+  static bool EqualKey(key_type_ref Key1, key_type_ref Key2) {
+    return Key1 == Key2;
+  }
+
+  static void MergeDataInto(const data_type &From, data_type_builder &To) {
+    To.insert(From);
+  }
+
+  file_type ReadFileRef(const unsigned char *&Data);
+};
+
+struct DeclInfoLookupTable {
+  MultiOnDiskHashTable<DeclInfoLookupTrait> Table;
+};
 
 } // namespace reader
 

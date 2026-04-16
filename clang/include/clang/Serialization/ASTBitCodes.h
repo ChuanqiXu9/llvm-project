@@ -31,6 +31,9 @@
 #include <cstdint>
 
 namespace clang {
+
+class Decl;
+
 namespace serialization {
 
 /// AST file major version number supported by this version of
@@ -342,6 +345,10 @@ enum BlockIDs {
   /// These records should not change the \a ASTFileSignature.  See \a
   /// UnhashedControlBlockRecordTypes for the list of records.
   UNHASHED_CONTROL_BLOCK_ID,
+
+  /// A block containing the lookup table from DeclInfoHash to LocalDeclID.
+  /// This is used to resolve DeclInfo to actual DeclIDs.
+  DECLINFO_LOOKUP_BLOCK_ID,
 };
 
 /// Record types that occur within the control block.
@@ -751,6 +758,28 @@ enum ASTRecordTypes {
 
   /// Record code for extname-redefined undeclared identifiers.
   EXTNAME_UNDECLARED_IDENTIFIERS = 79,
+
+  /// Record code for the hash of each local declaration.
+  /// Format: abbrev + blob [DECL_HASHES (literal), Count (VBR6), Blob]
+  /// The Blob contains all hashes as uint64_t (little-endian), ordered by
+  /// local declaration index.
+  DECL_HASHES = 80,
+
+  /// Record code for all DeclInfos.
+  /// Format: abbrev + blob [DECL_INFOS (literal), Count (VBR6), Blob]
+  /// The Blob contains Kind(1 byte) + Hash(8 bytes) pairs for each DeclInfo.
+  /// Each entry is 9 bytes, ordered by LocalDeclInfoIndex.
+  DECL_INFOS = 81,
+  
+  /// Record code for the DeclInfo lookup table.
+  /// Format: [DECLINFO_LOOKUP_TABLE, Hash1, DeclID1, Hash2, DeclID2, ...]
+  DECLINFO_LOOKUP_TABLE = 83,
+  
+  /// Record code for DeclInfo placeholders.
+  /// Contains two uint64_t values in a blob:
+  /// - [0]: Offset to DECL_INFOS record (backpatched later)
+  /// - [1]: Offset to DECLINFO_LOOKUP_TABLE record (backpatched later)
+  DECL_INFO_PLACEHOLDERS = 84,
 };
 
 /// Record types used within a source manager block.
@@ -2192,6 +2221,33 @@ public:
                          const DeclarationNameKey &B) {
     return A.Kind == B.Kind && A.Data == B.Data;
   }
+};
+
+/// Describes information about a declaration for cross-module references.
+///
+/// DeclInfo is used to describe external declarations from other modules.
+/// It contains:
+/// - Kind: Declaration kind
+/// - Hash: Computed from Decl* for lookup in the target module
+///
+/// FIXME: We don't store DeclarationName because GetDeclInfoID can be called
+/// after DoneWritingDeclsAndTypes, and serializing names that embed types
+/// (constructors, destructors, conversion operators) would trigger
+/// GetOrCreateTypeID assertions. Add DeclarationName back once the write
+/// ordering issue is resolved.
+struct DeclInfo {
+  uint8_t Kind = 0;
+  uint64_t Hash = 0;
+
+  DeclInfo() = default;
+  DeclInfo(uint8_t Kind, uint64_t Hash)
+      : Kind(Kind), Hash(Hash) {}
+
+  bool operator==(const DeclInfo &Other) const {
+    return Kind == Other.Kind;
+  }
+
+  bool operator!=(const DeclInfo &Other) const { return !(*this == Other); }
 };
 
 /// @}

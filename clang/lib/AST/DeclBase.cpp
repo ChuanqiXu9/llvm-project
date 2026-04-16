@@ -2270,7 +2270,3 @@ DependentDiagnostic *DependentDiagnostic::Create(ASTContext &C,
 
   return DD;
 }
-
-unsigned DeclIDBase::getLocalDeclIndex() const {
-  return ID & llvm::maskTrailingOnes<DeclID>(32);
-}

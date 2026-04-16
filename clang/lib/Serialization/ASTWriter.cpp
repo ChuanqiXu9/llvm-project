@@ -4562,6 +4562,55 @@ public:
   }
 };
 
+/// Trait class for writing DeclInfoLookupTable to disk.
+/// Used to map DeclInfoHash to LocalDeclID.
+class DeclInfoLookupTrait {
+public:
+  using key_type = uint64_t;
+  using key_type_ref = uint64_t;
+  using data_type = LocalDeclID;
+  using data_type_ref = LocalDeclID;
+  using hash_value_type = uint64_t;
+  using offset_type = unsigned;
+
+  static hash_value_type ComputeHash(key_type_ref Key) { return Key; }
+
+  static std::pair<offset_type, offset_type>
+  EmitKeyDataLength(raw_ostream &Out, key_type_ref Key, data_type_ref Data) {
+    return emitULEBKeyDataLength(8, 8, Out);
+  }
+
+  static void EmitKey(raw_ostream &Out, key_type_ref Key, offset_type KeyLen) {
+    using namespace llvm::support;
+    endian::Writer LE(Out, llvm::endianness::little);
+    LE.write<uint64_t>(Key);
+  }
+
+  static void EmitData(raw_ostream &Out, key_type_ref Key,
+                       data_type_ref Data, offset_type DataLen) {
+    using namespace llvm::support;
+    endian::Writer LE(Out, llvm::endianness::little);
+    LE.write<uint64_t>(Data.getRawValue());
+  }
+
+  static bool EqualKey(key_type_ref Key1, key_type_ref Key2) {
+    return Key1 == Key2;
+  }
+
+  data_type ImportData(
+      const serialization::reader::DeclInfoLookupTrait::data_type &FromReader) {
+    // Import from GlobalDeclID to LocalDeclID is not supported for chained PCH
+    // This should not be called in the current implementation
+    assert(false && "ImportData not supported for DeclInfoLookupTrait");
+    return LocalDeclID();
+  }
+
+  void EmitFileRef(raw_ostream &Out, ModuleFile *F) const {
+    // Used for MultiOnDiskHashTableGenerator::emit to output overridden files
+    // Currently no chain, so not needed
+  }
+};
+
 unsigned CalculateODRHashForSpecs(const Decl *Spec) {
   ArrayRef<TemplateArgument> Args;
   if (auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(Spec))
@@ -6147,6 +6196,33 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema *SemaPtr, StringRef isysroot,
     Stream.EmitRecord(METADATA_OLD_FORMAT, Record);
   }
 
+  // Define abbreviations for records that will be read during placeholder handling.
+  // DECL_INFOS abbreviation: [DECL_INFOS (literal), Count (VBR6), Blob]
+  {
+    auto Abbrev = std::make_shared<llvm::BitCodeAbbrev>();
+    Abbrev->Add(llvm::BitCodeAbbrevOp(DECL_INFOS));  // literal - record code
+    Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::VBR, 6));  // Count
+    Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::Blob));
+    DeclInfosAbbrevID = Stream.EmitAbbrev(std::move(Abbrev));
+  }
+
+  // DECLINFO_LOOKUP_TABLE abbreviation: [DECLINFO_LOOKUP_TABLE (literal), Blob]
+  {
+    auto Abbrev = std::make_shared<llvm::BitCodeAbbrev>();
+    Abbrev->Add(llvm::BitCodeAbbrevOp(DECLINFO_LOOKUP_TABLE));  // literal - record code
+    Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::Blob));
+    DeclInfoLookupTableAbbrevID = Stream.EmitAbbrev(std::move(Abbrev));
+  }
+
+  // DECL_HASHES abbreviation: [DECL_HASHES (literal), Count (VBR6), Blob]
+  {
+    auto Abbrev = std::make_shared<llvm::BitCodeAbbrev>();
+    Abbrev->Add(llvm::BitCodeAbbrevOp(DECL_HASHES));
+    Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::VBR, 6));
+    Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::Blob));
+    DeclHashesAbbrevID = Stream.EmitAbbrev(std::move(Abbrev));
+  }
+
   // For method pool in the module, if it contains an entry for a selector,
   // the entry should be complete, containing everything introduced by that
   // module and all modules it imports. It's possible that the entry is out of
@@ -6224,6 +6300,12 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema *SemaPtr, StringRef isysroot,
     Stream.EmitRecordWithBlob(ModuleOffsetMapAbbrev, Record,
                               Buffer.data(), Buffer.size());
   }
+
+  // Write DeclInfo placeholders (will be backpatched later)
+  // Both DECL_INFO_OFFSET_PLACEHOLDER and DECLINFO_LOOKUP_OFFSET_PLACEHOLDER
+  // are written together at the beginning
+  if (SemaPtr && shouldUseDeclInfoID())
+    WriteDeclInfoPlaceholders();
 
   if (SemaPtr)
     WriteDeclAndTypes(SemaPtr->Context);
@@ -6307,6 +6389,18 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema *SemaPtr, StringRef isysroot,
       Stream.EmitRecord(IMPORTED_MODULES, ImportedModules);
     }
   }
+
+  // Write DeclInfo blocks for external declaration references
+  // Must be done late to ensure all GetDeclRef calls have completed
+  if (SemaPtr) {
+    WriteDeclHashes();
+    WriteDeclInfos();
+    WriteDeclInfoLookupTable();
+  }
+
+  // Backpatch both DeclInfo placeholders together
+  if (SemaPtr && shouldUseDeclInfoID())
+    BackpatchDeclInfoPlaceholders();
 
   WriteObjCCategories();
   if (SemaPtr) {
@@ -6518,6 +6612,112 @@ void ASTWriter::WriteDeclAndTypes(ASTContext &Context) {
   // Write the visible updates to DeclContexts.
   for (auto *DC : UpdatedDeclContexts)
     WriteDeclContextVisibleUpdate(Context, DC);
+}
+
+//===----------------------------------------------------------------------===//
+// DeclInfo Placeholder Methods - Unified Entry Points
+//===----------------------------------------------------------------------===//
+
+void ASTWriter::WriteDeclInfoPlaceholders() {
+  if (!shouldUseDeclInfoID())
+    return;
+
+  // Write DECL_INFO_PLACEHOLDERS with two placeholder values (all 0 initially)
+  // [0]: Offset to DECL_INFOS record
+  // [1]: Offset to DECLINFO_LOOKUP_TABLE record
+  SmallString<16> Blob;  // 2 * 8 = 16 bytes
+  Blob.resize(2 * sizeof(uint64_t));
+  llvm::support::endian::write64le(Blob.data(), 0);                          // [0] DeclInfosRecordBitNo
+  llvm::support::endian::write64le(Blob.data() + sizeof(uint64_t), 0);       // [1] DeclInfoLookupRecordBitNo
+  
+  auto Abbrev = std::make_shared<llvm::BitCodeAbbrev>();
+  Abbrev->Add(llvm::BitCodeAbbrevOp(DECL_INFO_PLACEHOLDERS));
+  Abbrev->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::Blob));
+  unsigned PlaceholderAbbrev = Stream.EmitAbbrev(std::move(Abbrev));
+  
+  RecordData::value_type Record[] = {DECL_INFO_PLACEHOLDERS};
+  Stream.EmitRecordWithBlob(PlaceholderAbbrev, Record, Blob);
+  
+  // The placeholder blob starts at this position
+  DeclInfoPlaceholdersBitNo = Stream.GetCurrentBitNo() - 16 * 8;  // 16 bytes = 128 bits
+}
+
+void ASTWriter::BackpatchDeclInfoPlaceholders() {
+  if (!shouldUseDeclInfoID())
+    return;
+
+  if (DeclInfoPlaceholdersBitNo == 0) {
+    return;
+  }
+
+  // Backpatch [0]: DeclInfosRecordBitNo
+  if (DeclInfosRecordBitNo != 0) {
+    Stream.BackpatchWord64(DeclInfoPlaceholdersBitNo, DeclInfosRecordBitNo);
+  }
+
+  // Backpatch [1]: DeclInfoLookupRecordBitNo
+  if (DeclInfoLookupRecordBitNo != 0) {
+    Stream.BackpatchWord64(DeclInfoPlaceholdersBitNo + 64, DeclInfoLookupRecordBitNo);
+  }
+}
+
+void ASTWriter::WriteDeclInfos() {
+  if (DeclInfosToEmit.empty())
+    return;
+
+  // Record the position before writing
+  DeclInfosRecordBitNo = Stream.GetCurrentBitNo();
+
+  // Blob format: each DeclInfo is Kind (1 byte) + Hash (8 bytes) = 9 bytes
+  SmallString<256> Blob;
+  Blob.resize(DeclInfosToEmit.size() * 9);
+  for (size_t i = 0; i < DeclInfosToEmit.size(); ++i) {
+    Blob[i * 9] = DeclInfosToEmit[i].Kind;
+    llvm::support::endian::write64le(&Blob[i * 9 + 1], DeclInfosToEmit[i].Hash);
+  }
+
+  RecordData::value_type Record[] = {DECL_INFOS, DeclInfosToEmit.size()};
+  Stream.EmitRecordWithBlob(DeclInfosAbbrevID, Record, Blob);
+}
+
+void ASTWriter::WriteDeclInfoLookupTable() {
+  if (DeclInfoLookupMap.empty())
+    return;
+
+  MultiOnDiskHashTableGenerator<serialization::reader::DeclInfoLookupTrait,
+                                 DeclInfoLookupTrait> Generator;
+  DeclInfoLookupTrait Trait;
+
+  for (const auto &[Hash, LocalID] : DeclInfoLookupMap) {
+    Generator.insert(Hash, LocalID, Trait);
+  }
+
+  SmallVector<char, 4096> TableData;
+  Generator.emit(TableData, Trait, nullptr);
+
+  // Record the record position
+  DeclInfoLookupRecordBitNo = Stream.GetCurrentBitNo();
+
+  // Write DECLINFO_LOOKUP_TABLE record directly in AST_BLOCK
+  // Use global abbrev defined at AST_BLOCK entry (WriteASTCore line 6214)
+  RecordData Record;
+  Record.push_back(DECLINFO_LOOKUP_TABLE);
+  Stream.EmitRecordWithBlob(DeclInfoLookupTableAbbrevID, Record,
+                            StringRef(TableData.data(), TableData.size()));
+}
+
+void ASTWriter::WriteDeclHashes() {
+  if (DeclHashes.empty())
+    return;
+
+  SmallString<256> Blob;
+  Blob.resize(DeclHashes.size() * sizeof(uint64_t));
+  for (size_t I = 0; I < DeclHashes.size(); ++I)
+    llvm::support::endian::write64le(Blob.data() + I * sizeof(uint64_t),
+                                     DeclHashes[I]);
+
+  RecordData::value_type Record[] = {DECL_HASHES, DeclHashes.size()};
+  Stream.EmitRecordWithBlob(DeclHashesAbbrevID, Record, Blob);
 }
 
 void ASTWriter::WriteSpecializationsUpdates(bool IsPartial) {
@@ -7057,7 +7257,8 @@ void ASTWriter::AddEmittedDeclRef(const Decl *D, RecordDataImpl &Record) {
 }
 
 void ASTWriter::AddDeclRef(const Decl *D, RecordDataImpl &Record) {
-  Record.push_back(GetDeclRef(D).getRawValue());
+  LocalDeclID ID = GetDeclRef(D);
+  Record.push_back(ID.getRawValue());
 }
 
 LocalDeclID ASTWriter::GetDeclRef(const Decl *D) {
@@ -7069,12 +7270,23 @@ LocalDeclID ASTWriter::GetDeclRef(const Decl *D) {
 
   getLazyUpdates(D);
 
-  // If D comes from an AST file, its declaration ID is already known and
-  // fixed.
+  // If D comes from an AST file, use DeclInfoID for external declarations
+  // when writing C++20 named modules AND the target declaration belongs to
+  // another C++20 named module. Declarations from header units, Clang modules,
+  // or PCH use the traditional GlobalDeclID path.
   if (D->isFromASTFile()) {
     if (isWritingStdCXXNamedModules() && D->getOwningModule())
       TouchedTopLevelModules.insert(D->getOwningModule()->getTopLevelModule());
 
+    if (shouldUseDeclInfoID()) {
+      // Only use DeclInfoID for declarations from other C++20 named modules.
+      // Declarations from header units, Clang modules, etc. do not have
+      // DeclInfo lookup tables, so DeclInfoIDs targeting them cannot be resolved.
+      if (Module *M = D->getOwningModule(); M && M->isNamedModule()) {
+        DeclInfoID DID = GetDeclInfoID(D);
+        return DID;  // DeclInfoID implicitly converts to LocalDeclID
+      }
+    }
     return LocalDeclID(D->getGlobalID());
   }
 
@@ -7100,12 +7312,91 @@ LocalDeclID ASTWriter::getDeclID(const Decl *D) {
     return LocalDeclID();
 
   // If D comes from an AST file, its declaration ID is already known and
-  // fixed.
-  if (D->isFromASTFile())
+  // fixed. For C++20 named modules, we use DeclInfoID only for declarations
+  // from other named modules; otherwise we use GlobalDeclID directly.
+  if (D->isFromASTFile()) {
+    if (shouldUseDeclInfoID()) {
+      if (Module *M = D->getOwningModule(); M && M->isNamedModule()) {
+        DeclInfoID DID = GetDeclInfoID(D);
+        return LocalDeclID(DID.getRawValue());
+      }
+    }
     return LocalDeclID(D->getGlobalID());
+  }
 
   assert(DeclIDs.contains(D) && "Declaration not emitted!");
   return DeclIDs[D];
+}
+
+DeclInfoID ASTWriter::GetDeclInfoID(const Decl *D) {
+  assert(D && "GetDeclInfoID requires a valid declaration");
+  assert(D->isFromASTFile() && "GetDeclInfoID should only be called for declarations from AST files");
+
+  auto It = ExternalDeclToDeclInfoID.find(D);
+  if (It != ExternalDeclToDeclInfoID.end()) {
+    return It->second;
+  }
+
+  // Allocate linear index
+  unsigned LocalDeclInfoIndex = TotalDeclInfos++;
+
+  // Create DeclInfo
+  serialization::DeclInfo Info;
+  // FIXME: We don't store DeclarationName in DeclInfo for now because
+  // GetDeclInfoID can be called after DoneWritingDeclsAndTypes, and
+  // serializing DeclarationNames that embed types (CXXConstructorName,
+  // CXXDestructorName, CXXConversionFunctionName) would trigger
+  // GetOrCreateTypeID which asserts on new types at that point.
+  // The Hash is sufficient for cross-module lookup.
+  Info.Kind = static_cast<uint8_t>(D->getKind());
+  Info.Hash = getDeclHashForDeclInfo(D);
+
+  // Add to the queue
+  DeclInfosToEmit.push_back(Info);
+
+  // Create and cache the DeclInfoID
+  DeclInfoID ID(LocalDeclInfoIndex);
+  ExternalDeclToDeclInfoID[D] = ID;
+  
+  return ID;
+}
+
+void ASTWriter::addToDeclInfoLookupMap(const Decl *D, LocalDeclID ID) {
+  if (!shouldUseDeclInfoID())
+    return;
+
+  assert(!D->isFromASTFile());
+
+  uint64_t Hash = getDeclHashForDeclInfo(D);
+  unsigned Index = ID.getRawValue() - FirstDeclID.getRawValue();
+
+  // IDs are allocated consecutively, so resize once to the expected total size
+  // to avoid multiple small resizes.
+  if (DeclHashes.size() <= Index) {
+    DeclHashes.resize(NextDeclID.getRawValue() - FirstDeclID.getRawValue());
+  }
+
+  DeclHashes[Index] = Hash;
+  DeclInfoLookupMap[Hash] = ID;
+}
+
+uint64_t ASTWriter::getDeclHashForDeclInfo(const Decl *D) {
+  if (!D)
+    return 0;
+
+  auto It = DeclHashCache.find(D);
+  if (It != DeclHashCache.end())
+    return It->second;
+
+  if (D->isFromASTFile()) {
+    assert(Chain);
+    std::optional<uint64_t> StoredHash = Chain->getStoredDeclHash(D);
+    assert(StoredHash);
+    DeclHashCache[D] = *StoredHash;
+    return *StoredHash;
+  }
+
+  return computeDeclHash(D);
 }
 
 bool ASTWriter::wasDeclEmitted(const Decl *D) const {

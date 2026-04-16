@@ -2425,6 +2425,34 @@ HeaderFileInfoTrait::ReadData(internal_key_ref key, const unsigned char *d,
   return HFI;
 }
 
+//===----------------------------------------------------------------------===//
+// DeclInfoLookupTrait Implementation
+//===----------------------------------------------------------------------===//
+
+std::pair<unsigned, unsigned>
+reader::DeclInfoLookupTrait::ReadKeyDataLength(const unsigned char *&Data) {
+  return readULEBKeyDataLength(Data);
+}
+
+void reader::DeclInfoLookupTrait::ReadDataInto(key_type_ref Key,
+                                                const unsigned char *Data,
+                                                unsigned DataLen,
+                                                data_type_builder &Val) {
+  using namespace llvm::support;
+  uint64_t RawLocalID = endian::read<uint64_t>(Data, llvm::endianness::little);
+  LocalDeclID LocalID = LocalDeclID::get(Reader, F, RawLocalID);
+  GlobalDeclID GlobalID = Reader.getGlobalDeclID(F, LocalID);
+  if (GlobalID.isValid())
+    Val.insert(GlobalID);
+}
+
+reader::DeclInfoLookupTrait::file_type
+reader::DeclInfoLookupTrait::ReadFileRef(const unsigned char *&Data) {
+  using namespace llvm::support;
+  uint32_t ModuleFileID = endian::readNext<uint32_t, llvm::endianness::little>(Data);
+  return Reader.getLocalModuleFile(F, ModuleFileID);
+}
+
 void ASTReader::addPendingMacro(IdentifierInfo *II, ModuleFile *M,
                                 uint32_t MacroDirectivesOffset) {
   assert(NumCurrentElementsDeserializing > 0 &&"Missing deserialization guard");
@@ -3666,6 +3694,155 @@ ASTReader::ReadControlBlock(ModuleFile &F,
   }
 }
 
+llvm::Error ASTReader::loadDeclInfos(ModuleFile &F, uint64_t RecordBitNo) {
+  // Save current position
+  uint64_t CurrentBitNo = F.Stream.GetCurrentBitNo();
+
+  // Jump to DECL_INFOS record position
+  // RecordBitNo is stored as offset from GlobalBitOffset
+  if (llvm::Error Err = F.Stream.JumpToBit(RecordBitNo + F.GlobalBitOffset))
+    return Err;
+
+  // Read the record code
+  Expected<unsigned> MaybeCode = F.Stream.ReadCode();
+  if (!MaybeCode)
+    return MaybeCode.takeError();
+
+  // Read the DECL_INFOS record
+  RecordData Record;
+  StringRef Blob;
+  Expected<unsigned> MaybeRecCode =
+      F.Stream.readRecord(*MaybeCode, Record, &Blob);
+  if (!MaybeRecCode)
+    return MaybeRecCode.takeError();
+
+  if (*MaybeRecCode != DECL_INFOS) {
+    return llvm::createStringError(std::errc::illegal_byte_sequence,
+                                   "Expected DECL_INFOS record, got %u",
+                                   *MaybeRecCode);
+  }
+
+  // Parse DECL_INFOS: [Count, Blob]
+  if (Record.empty()) {
+    return llvm::createStringError(std::errc::illegal_byte_sequence,
+                                   "missing count in DECL_INFOS record");
+  }
+
+  F.LocalNumDeclInfos = Record[0];
+
+  // Verify blob size: each entry is 9 bytes (Kind + Hash)
+  if (F.LocalNumDeclInfos > 0) {
+    if (Blob.size() < F.LocalNumDeclInfos * 9) {
+      return llvm::createStringError(
+          std::errc::illegal_byte_sequence,
+          "DECL_INFOS blob too small: expected %zu, got %zu",
+          static_cast<size_t>(F.LocalNumDeclInfos) * 9, Blob.size());
+    }
+    F.DeclInfosBlob = Blob;
+  }
+
+  // Jump back to original position
+  if (llvm::Error Err = F.Stream.JumpToBit(CurrentBitNo))
+    return Err;
+
+  return llvm::Error::success();
+}
+
+llvm::Error ASTReader::loadDeclInfoLookupTable(ModuleFile &F, uint64_t RecordBitNo) {
+  // Save current position
+  uint64_t CurrentBitNo = F.Stream.GetCurrentBitNo();
+
+  // Jump to DECLINFO_LOOKUP_TABLE record position
+  // RecordBitNo is stored as offset from GlobalBitOffset
+  if (llvm::Error Err = F.Stream.JumpToBit(RecordBitNo + F.GlobalBitOffset))
+    return Err;
+
+  // Read the record code
+  Expected<unsigned> MaybeCode = F.Stream.ReadCode();
+  if (!MaybeCode)
+    return MaybeCode.takeError();
+
+  // Read the DECLINFO_LOOKUP_TABLE record
+  RecordData Record;
+  StringRef Blob;
+  Expected<unsigned> MaybeRec = F.Stream.readRecord(*MaybeCode, Record, &Blob);
+  if (!MaybeRec)
+    return MaybeRec.takeError();
+
+  if (*MaybeRec != DECLINFO_LOOKUP_TABLE) {
+    return llvm::createStringError(std::errc::illegal_byte_sequence,
+                                   "Expected DECLINFO_LOOKUP_TABLE record");
+  }
+
+  // Parse and add to global lookup table
+  auto *Data = (const unsigned char *)Blob.data();
+  if (!DeclInfoLookup)
+    DeclInfoLookup = std::make_unique<serialization::reader::DeclInfoLookupTable>();
+  DeclInfoLookup->Table.add(&F, Data, serialization::reader::DeclInfoLookupTrait(*this, F));
+
+  // Jump back to original position
+  if (llvm::Error Err = F.Stream.JumpToBit(CurrentBitNo))
+    return Err;
+
+  return llvm::Error::success();
+}
+  llvm::Error ASTReader::loadDeclHashes(ModuleFile &F, const RecordData &Record,
+                                      StringRef Blob) {
+  if (F.DeclHashes)
+    return llvm::createStringError(std::errc::illegal_byte_sequence,
+                                   "duplicate DECL_HASHES record in AST file");
+
+  if (Record.empty())
+    return llvm::createStringError(std::errc::illegal_byte_sequence,
+                                   "DECL_HASHES record missing count");
+
+  unsigned Count = Record[0];
+  if (F.LocalNumDecls && Count != F.LocalNumDecls)
+    return llvm::createStringError(std::errc::illegal_byte_sequence,
+                                   "DECL_HASHES count mismatch: expected %u but got %u",
+                                   F.LocalNumDecls, Count);
+
+  if (Blob.size() < Count * sizeof(uint64_t))
+    return llvm::createStringError(std::errc::illegal_byte_sequence,
+                                   "DECL_HASHES blob too small: expected %zu, got %zu",
+                                   static_cast<size_t>(Count) * sizeof(uint64_t),
+                                   Blob.size());
+
+  F.DeclHashes = reinterpret_cast<const UnalignedUInt64 *>(Blob.data());
+  return llvm::Error::success();
+}
+
+llvm::Error ASTReader::handleDeclInfoPlaceholders(ModuleFile &F, StringRef Blob) {
+  // The blob contains two uint64_t values:
+  // [0]: Offset to DECL_INFOS record
+  // [1]: Offset to DECLINFO_LOOKUP_TABLE record
+  
+  if (Blob.size() < 2 * sizeof(uint64_t)) {
+    return llvm::createStringError(
+        std::errc::illegal_byte_sequence,
+        "invalid DECL_INFO_PLACEHOLDERS blob size");
+  }
+
+  uint64_t DeclInfosRecordBitNo =
+      llvm::support::endian::read64le(Blob.data());
+  uint64_t DeclInfoLookupRecordBitNo =
+      llvm::support::endian::read64le(Blob.data() + sizeof(uint64_t));
+
+  // Load DECL_INFOS record early
+  if (DeclInfosRecordBitNo != 0) {
+    if (llvm::Error Err = loadDeclInfos(F, DeclInfosRecordBitNo))
+      return Err;
+  }
+
+  // Load DeclInfo lookup table immediately
+  if (DeclInfoLookupRecordBitNo != 0) {
+    if (llvm::Error Err = loadDeclInfoLookupTable(F, DeclInfoLookupRecordBitNo))
+      return Err;
+  }
+
+  return llvm::Error::success();
+}
+
 llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
                                     unsigned ClientLoadCapabilities) {
   BitstreamCursor &Stream = F.Stream;
@@ -3767,6 +3944,12 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
         break;
       }
 
+      case DECLINFO_LOOKUP_BLOCK_ID:
+        // Already loaded in handleDeclInfoPlaceholders via placeholder [1]
+        if (llvm::Error Err = Stream.SkipBlock())
+          return Err;
+        break;
+
       default:
         if (llvm::Error Err = Stream.SkipBlock())
           return Err;
@@ -3842,6 +4025,54 @@ llvm::Error ASTReader::ReadASTBlock(ModuleFile &F,
       if (F.LocalNumDecls > 0)
         DeclsLoaded.resize(DeclsLoaded.size() + F.LocalNumDecls);
 
+      break;
+    }
+
+    case DECL_HASHES: {
+      if (llvm::Error Err = loadDeclHashes(F, Record, Blob))
+        return Err;
+      break;
+    }
+    
+    case DECL_INFO_PLACEHOLDERS: {
+      if (llvm::Error Err = handleDeclInfoPlaceholders(F, Blob))
+        return Err;
+      break;
+    }
+    
+    case DECL_INFOS: {
+      // If already loaded via placeholder, skip
+      if (F.LocalNumDeclInfos > 0 && !F.DeclInfosBlob.empty()) {
+        // Already loaded, just verify consistency
+        if (Record.size() >= 1 && Record[0] != F.LocalNumDeclInfos) {
+          return llvm::createStringError(
+              std::errc::illegal_byte_sequence,
+              "DECL_INFOS count mismatch: expected %u but got %u",
+              F.LocalNumDeclInfos, static_cast<unsigned>(Record[0]));
+        }
+        break;
+      }
+
+      // Store the DeclInfos blob data
+      // Format: [DECL_INFOS, Count (VBR6), Blob]
+      // Blob: Kind(1 byte) + Hash(8 bytes) for each DeclInfo, 9 bytes each
+      if (Record.size() < 1)
+        return llvm::createStringError(
+            std::errc::illegal_byte_sequence,
+            "missing count in DECL_INFOS record");
+      
+      F.LocalNumDeclInfos = Record[0];
+      
+      // Verify blob size: each entry is 9 bytes (Kind + Hash)
+      if (F.LocalNumDeclInfos > 0) {
+        if (Blob.size() < F.LocalNumDeclInfos * 9) {
+          return llvm::createStringError(
+              std::errc::illegal_byte_sequence,
+              "DECL_INFOS blob too small: expected %zu, got %zu",
+              F.LocalNumDeclInfos * 9, Blob.size());
+        }
+        F.DeclInfosBlob = Blob;
+      }
       break;
     }
 
@@ -8330,8 +8561,14 @@ CXXBaseSpecifier *ASTReader::GetExternalCXXBaseSpecifiers(uint64_t Offset) {
   return Bases;
 }
 
-GlobalDeclID ASTReader::getGlobalDeclID(ModuleFile &F,
-                                        LocalDeclID LocalID) const {
+GlobalDeclID ASTReader::getGlobalDeclID(ModuleFile &F, LocalDeclID LocalID) {
+  
+  // Handle DeclInfoID: resolve via lookup table
+  if (LocalID.isDeclInfo()) {
+    DeclInfoID DID = DeclInfoID::fromLocalDeclID(LocalID);
+    return resolveDeclInfoID(F, DID);
+  }
+  
   if (LocalID < NUM_PREDEF_DECL_IDS)
     return GlobalDeclID(LocalID.getRawValue());
 
@@ -8545,7 +8782,61 @@ Decl *ASTReader::GetExistingDecl(GlobalDeclID ID) {
   return DeclsLoaded[Index];
 }
 
+GlobalDeclID ASTReader::resolveDeclInfoID(ModuleFile &F, DeclInfoID ID) {
+  unsigned LocalDeclInfoIndex = ID.getLocalDeclInfoIndex();
+
+  if (LocalDeclInfoIndex >= F.LocalNumDeclInfos) {
+    assert(F.LocalNumDeclInfos);
+    Error("DeclInfo index out of range");
+    return GlobalDeclID();
+  }
+
+  // Parse from DeclInfosBlob
+  // Each entry: Kind (1 byte) + Hash (8 bytes) = 9 bytes
+  if (F.DeclInfosBlob.size() < (LocalDeclInfoIndex + 1) * 9) {
+    Error("DeclInfosBlob too small");
+    return GlobalDeclID();
+  }
+
+  // Parse Kind and Hash from blob (Kind is stored but not used for resolution)
+  // uint8_t Kind = F.DeclInfosBlob[LocalDeclInfoIndex * 9];
+  uint64_t Hash = llvm::support::endian::read64le(F.DeclInfosBlob.data() + LocalDeclInfoIndex * 9 + 1);
+
+  assert(DeclInfoLookup && "DeclInfoLookup should have been initialized");
+
+  // Query lookup table
+  GlobalDeclID Result = DeclInfoLookup->Table.find(Hash);
+  
+  return Result;
+}
+
+std::optional<uint64_t> ASTReader::getStoredDeclHash(GlobalDeclID ID) const {
+  if (ID < NUM_PREDEF_DECL_IDS)
+    return std::nullopt;
+
+  ModuleFile *MF = getOwningModuleFile(ID);
+  if (!MF || !MF->DeclHashes)
+    return std::nullopt;
+
+  unsigned LocalIndex = ID.getLocalDeclIndex();
+  if (LocalIndex >= MF->LocalNumDecls)
+    return std::nullopt;
+
+  return MF->DeclHashes[LocalIndex].get();
+}
+
+std::optional<uint64_t> ASTReader::getStoredDeclHash(const Decl *D) const {
+  if (!D || !D->isFromASTFile())
+    return std::nullopt;
+
+  return getStoredDeclHash(D->getGlobalID());
+}
+
 Decl *ASTReader::GetDecl(GlobalDeclID ID) {
+  
+  // DeclInfoID is already resolved in getGlobalDeclID
+  // GetDecl should only receive true GlobalDeclID now
+  
   if (ID < NUM_PREDEF_DECL_IDS)
     return GetExistingDecl(ID);
 
@@ -8602,7 +8893,9 @@ GlobalDeclID ASTReader::ReadDeclID(ModuleFile &F, const RecordDataImpl &Record,
     return GlobalDeclID(0);
   }
 
-  return getGlobalDeclID(F, LocalDeclID::get(*this, F, Record[Idx++]));
+  uint64_t RawValue = Record[Idx++];
+  
+  return getGlobalDeclID(F, LocalDeclID::get(*this, F, RawValue));
 }
 
 /// Resolve the offset of a statement into a statement.

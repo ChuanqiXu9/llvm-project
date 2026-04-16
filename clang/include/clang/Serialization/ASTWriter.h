@@ -245,9 +245,49 @@ private:
   /// the same module as the main decl during deserialization.
   llvm::DenseMap<LocalDeclID, SmallVector<LocalDeclID, 4>> RelatedDeclsMap;
 
+  // === DeclInfo related members ===
+
+  /// Total number of DeclInfos allocated.
+  unsigned TotalDeclInfos = 0;
+
+  /// DeclInfos to emit.
+  SmallVector<serialization::DeclInfo, 16> DeclInfosToEmit;
+
+  /// Cache mapping from external declarations to their DeclInfoIDs.
+  llvm::DenseMap<const Decl *, DeclInfoID> ExternalDeclToDeclInfoID;
+
+  /// DeclInfo lookup map for the current module's local declarations.
+  /// Maps DeclInfoHash to LocalDeclID.
+  llvm::DenseMap<uint64_t, LocalDeclID> DeclInfoLookupMap;
+
+  /// Cache for computed Decl hashes, used by DeclInfoHashVisitor.
+  llvm::DenseMap<const Decl *, uint64_t> DeclHashCache;
+
+  /// Bit position of DECL_INFO_PLACEHOLDERS record (for backpatching).
+  /// The blob contains two uint64_t values.
+  uint64_t DeclInfoPlaceholdersBitNo = 0;
+
+  /// Bit position of DECL_INFOS record (for backpatching the placeholder).
+  uint64_t DeclInfosRecordBitNo = 0;
+
+  /// Abbreviation ID for DECL_INFOS record (defined at AST_BLOCK entry).
+  unsigned DeclInfosAbbrevID = 0;
+
+  /// Abbreviation ID for DECLINFO_LOOKUP_TABLE record (defined at AST_BLOCK entry).
+  unsigned DeclInfoLookupTableAbbrevID = 0;
+
+  /// Abbreviation ID for DECL_HASHES record (defined at AST_BLOCK entry).
+  unsigned DeclHashesAbbrevID = 0;
+
+  /// Bit position of DECLINFO_LOOKUP_TABLE record (for backpatching the placeholder).
+  uint64_t DeclInfoLookupRecordBitNo = 0;
+
   /// Offset of each declaration in the bitstream, indexed by
   /// the declaration's ID.
   std::vector<serialization::DeclOffset> DeclOffsets;
+
+  /// Hash of each local declaration, indexed by local declaration index.
+  std::vector<uint64_t> DeclHashes;
 
   /// The offset of the DECLTYPES_BLOCK. The offsets in DeclOffsets
   /// are relative to this value.
@@ -630,6 +670,14 @@ private:
   void WriteIdentifierTable(Preprocessor &PP, IdentifierResolver *IdResolver,
                             bool IsModule);
   void WriteDeclAndTypes(ASTContext &Context);
+  
+  // DeclInfo placeholder methods - unified entry points
+  void WriteDeclInfoPlaceholders();
+  void BackpatchDeclInfoPlaceholders();
+  
+  void WriteDeclInfos();
+  void WriteDeclInfoLookupTable();
+  void WriteDeclHashes();
   void PrepareWritingSpecialDecls(Sema &SemaRef);
   void WriteSpecialDeclRecords(Sema &SemaRef);
   void WriteSpecializationsUpdates(bool IsPartial);
@@ -814,6 +862,28 @@ public:
   /// Determine the local declaration ID of an already-emitted
   /// declaration.
   LocalDeclID getDeclID(const Decl *D);
+
+  /// Get or create a DeclInfoID for an external declaration.
+  /// This is used when referencing declarations from other modules.
+  DeclInfoID GetDeclInfoID(const Decl *D);
+
+  /// Add a local declaration to the DeclInfo lookup map.
+  void addToDeclInfoLookupMap(const Decl *D, LocalDeclID ID);
+
+  /// Compute hash for a declaration with caching.
+  uint64_t computeDeclHash(const Decl *D);
+
+  /// Get the hash used by DeclInfo, reusing hashes stored in imported modules
+  /// whenever possible.
+  uint64_t getDeclHashForDeclInfo(const Decl *D);
+
+  /// Whether to use DeclInfoID for external declarations.
+  /// This is true only for C++20 named modules, false for PCH and other
+  /// module kinds (e.g., header units, Clang modules).
+  /// When enabled, DeclInfoIDs are only emitted for declarations that belong
+  /// to other C++20 named modules; declarations from header units, Clang
+  /// modules, or PCH fall back to the traditional GlobalDeclID path.
+  bool shouldUseDeclInfoID() const { return isWritingStdCXXNamedModules(); }
 
   /// Whether or not the declaration got emitted. If not, it wouldn't be
   /// emitted.
