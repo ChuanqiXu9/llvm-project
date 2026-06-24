@@ -10940,16 +10940,11 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
 
     if (D.hasContractSpecifiers()) {
       // P2900R14 [dcl.contract.func]p1: Contracts are not allowed on
-      // constructors, destructors, deleted functions, or defaulted functions.
-      // Check for deleted/defaulted first, as they are more specific.
+      // deleted or defaulted functions.
       if (NewFD->isDeletedAsWritten()) {
         Diag(NewFD->getLocation(), diag::err_contracts_on_deleted);
       } else if (NewFD->isDefaulted()) {
         Diag(NewFD->getLocation(), diag::err_contracts_on_defaulted);
-      } else if (isa<CXXConstructorDecl>(NewFD)) {
-        Diag(NewFD->getLocation(), diag::err_contracts_on_ctor_dtor) << 0;
-      } else if (isa<CXXDestructorDecl>(NewFD)) {
-        Diag(NewFD->getLocation(), diag::err_contracts_on_ctor_dtor) << 1;
       } else {
         ActOnFunctionContractSpecifiers(NewFD, D);
       }
@@ -21520,6 +21515,11 @@ VarDecl *Sema::ActOnPostConditionResultName(Scope *S, Declarator &D,
                                             IdentifierInfo *ResultName,
                                             SourceLocation ResultNameLoc,
                                             ParsedType TrailingReturnType) {
+  if (D.getName().getKind() == UnqualifiedIdKind::IK_ConstructorName) {
+    Diag(ResultNameLoc, diag::err_post_condition_result_name_void_return);
+    return nullptr;
+  }
+
   QualType RetTy;
   if (!TrailingReturnType.get().isNull()) {
     RetTy = GetTypeFromParser(TrailingReturnType);
@@ -21580,12 +21580,45 @@ VarDecl *Sema::ActOnPostConditionResultName(Scope *S, Declarator &D,
   return ResultVar;
 }
 
-/// Convert parsed contract specifiers from the Declarator into
-/// ContractAnnotation linked lists and attach them to the FunctionDecl.
-///
-/// Called from ActOnFunctionDeclarator after the FunctionDecl is created.
-/// Builds two singly-linked lists (pre-conditions and post-conditions)
-/// in declaration order.
+/// Diagnose uses of 'this' that are specifically disallowed for contract
+/// predicates on constructors and destructors: constructor preconditions and
+/// destructor postconditions.
+static bool DiagnoseInvalidThisInContractPredicate(Sema &S, FunctionDecl *FD,
+                                                   bool IsPre,
+                                                   Expr *Predicate) {
+  if (!Predicate)
+    return false;
+
+  unsigned DiagID = 0;
+  if (isa<CXXConstructorDecl>(FD) && IsPre)
+    DiagID = diag::err_contract_constructor_pre_this;
+  else if (isa<CXXDestructorDecl>(FD) && !IsPre)
+    DiagID = diag::err_contract_destructor_post_this;
+
+  if (!DiagID)
+    return false;
+
+  class ThisChecker : public RecursiveASTVisitor<ThisChecker> {
+    Sema &S;
+    unsigned DiagID;
+    bool FoundError = false;
+
+  public:
+    ThisChecker(Sema &S, unsigned DiagID) : S(S), DiagID(DiagID) {}
+
+    bool VisitCXXThisExpr(CXXThisExpr *ThisE) {
+      S.Diag(ThisE->getBeginLoc(), DiagID);
+      FoundError = true;
+      return false;
+    }
+
+    bool hasError() const { return FoundError; }
+  } Checker(S, DiagID);
+
+  Checker.TraverseStmt(Predicate);
+  return Checker.hasError();
+}
+
 void Sema::ActOnFunctionContractSpecifiers(FunctionDecl *FD,
                                            const Declarator &D) {
   // P2900R14: contracts on virtual functions are not supported.
@@ -21648,6 +21681,11 @@ void Sema::ActOnFunctionContractSpecifiers(FunctionDecl *FD,
       else
         Pred = Converted.get();
     }
+
+    if (!Invalid && DiagnoseInvalidThisInContractPredicate(
+                        *this, FD,
+                        CS.CKind == Declarator::ContractSpecInfo::Pre, Pred))
+      Invalid = true;
 
     // P2900R14 §3.4.4: Parameters used in postcondition predicates must be const
     if (!Invalid && CS.CKind == Declarator::ContractSpecInfo::Post && Pred) {
@@ -21907,6 +21945,11 @@ void Sema::ActOnLateParsedContractSpecifier(FunctionDecl *FD, bool IsPre,
     Predicate = Converted.get();
   }
 
+  if (DiagnoseInvalidThisInContractPredicate(*this, FD, IsPre, Predicate)) {
+    MarkPendingContractInvalid();
+    return;
+  }
+
   // P2900R14 §3.4.4: Parameters used in postcondition predicates must be const
   if (!IsPre && Predicate) {
     class NonConstParamChecker
@@ -22087,7 +22130,7 @@ StmtResult Sema::ActOnContractAssert(SourceLocation ContractAssertLoc,
 
   auto *CAS = new (Context)
       ContractAssertStmt(Predicate, ContractAssertLoc, LParenLoc, RParenLoc);
-  // contract_kind::assert_kind = 2 ([support.contract.cviol]).
+  // assertion_kind::assert = 3 ([support.contract.cviol]).
   // Only build the handler body if we're not in a dependent context.
   auto *FD = cast<FunctionDecl>(CurContext);
   if (!FD->isDependentContext()) {
@@ -22104,16 +22147,21 @@ StmtResult Sema::ActOnContractAssert(SourceLocation ContractAssertLoc,
 /// Per [basic.contract.eval] p5, when a contract predicate evaluates to false,
 /// the implementation constructs a contract_violation object and calls
 /// handle_contract_violation. This function validates that the user-provided
-/// std::contracts namespace contains all required types with correct signatures.
+/// std::contracts namespace contains the libstdc++-compatible public enums and
+/// the expected contract_violation layout that Clang materializes internally.
+///
+/// This is a deliberate practical choice: Clang currently prefers compatibility
+/// with GCC/libstdc++'s deployed contracts ABI over a paper-only integration
+/// model. In particular, Clang validates and consumes the current libstdc++
+/// layout even though the paper does not standardize that object layout.
 ///
 /// Required types from [support.contract.cviol]:
-///   - contract_violation: class with fields
-///     * _M_file, _M_function, _M_comment: const char*
-///     * _M_line: unsigned int
-///     * _M_kind: contract_kind enum
-///     * _M_detection_mode: detection_mode_t enum
-///   - contract_kind: enum class { pre, post, assert_kind }
-///   - detection_mode_t: enum class { predicate_false }
+///   - contract_violation: class type with libstdc++'s current field layout
+///   - assertion_kind: enum class { pre = 1, post = 2, assert = 3 }
+///   - evaluation_semantic: enum class { ignore = 1, observe = 2,
+///       enforce = 3, quick_enforce = 4 }
+///   - detection_mode: enum class { predicate_false = 1,
+///       evaluation_exception = 2 }
 ///
 /// Required function from [support.contract.handle]:
 ///   - handle_contract_violation(const contract_violation&)
@@ -22126,8 +22174,9 @@ Sema::LookupContractViolationHandler(SourceLocation Loc) {
   using Failure = ContractViolationLookupFailure;
 
   if (ContractViolationLookupDone)
-    return StdHandleContractViolationDecl ? Failure::None
-                                          : ContractViolationLookupResult;
+    return StdContractViolationDecl && StdHandleContractViolationDecl
+               ? Failure::None
+               : ContractViolationLookupResult;
   ContractViolationLookupDone = true;
 
   NamespaceDecl *StdNS = getStdNamespace();
@@ -22155,19 +22204,26 @@ Sema::LookupContractViolationHandler(SourceLocation Loc) {
   if (!ViolationDecl->isCompleteDefinition())
     return ContractViolationLookupResult = Failure::IncompleteContractViolation;
 
-  // Look up std::contracts::contract_kind ([support.contract.cviol]):
-  //   enum class contract_kind { pre, post, assert_kind };
-  IdentifierInfo &CKII = PP.getIdentifierTable().get("contract_kind");
-  LookupResult CKResult(*this, &CKII, Loc, LookupOrdinaryName);
-  if (!LookupQualifiedName(CKResult, ContractsNS))
-    return ContractViolationLookupResult = Failure::MissingContractKind;
-  auto *ContractKindDecl = CKResult.getAsSingle<EnumDecl>();
-  if (!ContractKindDecl)
-    return ContractViolationLookupResult = Failure::MissingContractKind;
+  // Look up std::contracts::assertion_kind ([support.contract.cviol]).
+  IdentifierInfo &AKII = PP.getIdentifierTable().get("assertion_kind");
+  LookupResult AKResult(*this, &AKII, Loc, LookupOrdinaryName);
+  if (!LookupQualifiedName(AKResult, ContractsNS))
+    return ContractViolationLookupResult = Failure::MissingAssertionKind;
+  auto *AssertionKindDecl = AKResult.getAsSingle<EnumDecl>();
+  if (!AssertionKindDecl)
+    return ContractViolationLookupResult = Failure::MissingAssertionKind;
 
-  // Look up std::contracts::detection_mode_t ([support.contract.cviol]):
-  //   enum class detection_mode_t { predicate_false };
-  IdentifierInfo &DMII = PP.getIdentifierTable().get("detection_mode_t");
+  // Look up std::contracts::evaluation_semantic ([support.contract.cviol]).
+  IdentifierInfo &ESII = PP.getIdentifierTable().get("evaluation_semantic");
+  LookupResult ESResult(*this, &ESII, Loc, LookupOrdinaryName);
+  if (!LookupQualifiedName(ESResult, ContractsNS))
+    return ContractViolationLookupResult = Failure::MissingEvaluationSemantic;
+  auto *EvaluationSemanticDecl = ESResult.getAsSingle<EnumDecl>();
+  if (!EvaluationSemanticDecl)
+    return ContractViolationLookupResult = Failure::MissingEvaluationSemantic;
+
+  // Look up std::contracts::detection_mode ([support.contract.cviol]).
+  IdentifierInfo &DMII = PP.getIdentifierTable().get("detection_mode");
   LookupResult DMResult(*this, &DMII, Loc, LookupOrdinaryName);
   if (!LookupQualifiedName(DMResult, ContractsNS))
     return ContractViolationLookupResult = Failure::MissingDetectionMode;
@@ -22175,51 +22231,48 @@ Sema::LookupContractViolationHandler(SourceLocation Loc) {
   if (!DetectionModeDecl)
     return ContractViolationLookupResult = Failure::MissingDetectionMode;
 
-  // Validate that contract_violation has the expected field layout per
-  // [support.contract.cviol]. The implementation needs to construct this
-  // object with specific values for file, function, comment, line, kind,
-  // and detection_mode.
-  QualType ContractKindType = Context.getTypeDeclType(
-      static_cast<const TypeDecl *>(ContractKindDecl));
+  QualType UInt16Ty = Context.UnsignedShortTy;
+  QualType AssertionKindType =
+      Context.getTypeDeclType(static_cast<const TypeDecl *>(AssertionKindDecl));
+  QualType EvaluationSemanticType = Context.getTypeDeclType(
+      static_cast<const TypeDecl *>(EvaluationSemanticDecl));
   QualType DetectionModeType = Context.getTypeDeclType(
       static_cast<const TypeDecl *>(DetectionModeDecl));
-
-  unsigned FieldCount = 0;
-  for (const auto *F : ViolationDecl->fields()) {
-    StringRef Name = F->getName();
-    if (Name == "_M_file" || Name == "_M_function" || Name == "_M_comment") {
-      // These fields store the source location and predicate text as C strings.
-      if (F->getType() != Context.getPointerType(Context.CharTy.withConst()))
-        return ContractViolationLookupResult = Failure::MalformedContractViolation;
-      FieldCount++;
-    } else if (Name == "_M_line") {
-      // Source line number.
-      if (!F->getType()->isUnsignedIntegerType())
-        return ContractViolationLookupResult = Failure::MalformedContractViolation;
-      FieldCount++;
-    } else if (Name == "_M_kind") {
-      // Contract kind: pre(0), post(1), or assert(2) per [support.contract.cviol].
-      if (F->getType().getCanonicalType() != ContractKindType.getCanonicalType())
-        return ContractViolationLookupResult = Failure::MalformedContractViolation;
-      FieldCount++;
-    } else if (Name == "_M_detection_mode") {
-      // Detection mode: always predicate_false per [support.contract.cviol].
-      if (F->getType().getCanonicalType() != DetectionModeType.getCanonicalType())
-        return ContractViolationLookupResult = Failure::MalformedContractViolation;
-      FieldCount++;
-    } else {
-      // Unknown field - reject the declaration.
-      return ContractViolationLookupResult = Failure::MalformedContractViolation;
-    }
-  }
-  // Must have exactly 6 fields: _M_file, _M_function, _M_comment, _M_line,
-  // _M_kind, _M_detection_mode.
-  if (FieldCount != 6)
-    return ContractViolationLookupResult = Failure::MalformedContractViolation;
-
   StdContractViolationDecl = ViolationDecl;
-  StdContractKindDecl = ContractKindDecl;
+  StdAssertionKindDecl = AssertionKindDecl;
+  StdEvaluationSemanticDecl = EvaluationSemanticDecl;
   StdDetectionModeDecl = DetectionModeDecl;
+
+  QualType ViolationType = Context.getTypeDeclType(
+      static_cast<const TypeDecl *>(ViolationDecl));
+
+  auto HasCanonicalType = [](QualType LHS, QualType RHS) {
+    return LHS.getCanonicalType() == RHS.getCanonicalType();
+  };
+
+  SmallVector<FieldDecl *, 8> Fields;
+  for (FieldDecl *Field : ViolationDecl->fields())
+    Fields.push_back(Field);
+
+  QualType ConstCharPtrTy = Context.getPointerType(Context.CharTy.withConst());
+  QualType ConstVoidPtrTy = Context.getPointerType(Context.VoidTy.withConst());
+  QualType VendorExtPtrTy = Context.VoidPtrTy;
+  if (Fields.size() != 7 ||
+      Fields[0]->getName() != "_M_version" ||
+      !HasCanonicalType(Fields[0]->getType(), UInt16Ty) ||
+      Fields[1]->getName() != "_M_assertion_kind" ||
+      !HasCanonicalType(Fields[1]->getType(), AssertionKindType) ||
+      Fields[2]->getName() != "_M_evaluation_semantic" ||
+      !HasCanonicalType(Fields[2]->getType(), EvaluationSemanticType) ||
+      Fields[3]->getName() != "_M_detection_mode" ||
+      !HasCanonicalType(Fields[3]->getType(), DetectionModeType) ||
+      Fields[4]->getName() != "_M_comment" ||
+      !HasCanonicalType(Fields[4]->getType(), ConstCharPtrTy) ||
+      Fields[5]->getName() != "_M_src_loc_ptr" ||
+      !HasCanonicalType(Fields[5]->getType(), ConstVoidPtrTy) ||
+      Fields[6]->getName() != "_M_ext" ||
+      !HasCanonicalType(Fields[6]->getType(), VendorExtPtrTy))
+    return ContractViolationLookupResult = Failure::MalformedContractViolation;
 
   // Look up std::contracts::handle_contract_violation ([support.contract.handle]).
   // This is the function called when a contract predicate is violated.
@@ -22233,6 +22286,14 @@ Sema::LookupContractViolationHandler(SourceLocation Loc) {
   if (!HandlerDecl)
     return ContractViolationLookupResult = Failure::MissingHandlerFunction;
 
+  QualType ExpectedHandlerParamType =
+      Context.getLValueReferenceType(ViolationType.withConst());
+  if (!HandlerDecl->getReturnType()->isVoidType() ||
+      HandlerDecl->param_size() != 1 ||
+      !HasCanonicalType(HandlerDecl->parameters()[0]->getType(),
+                        ExpectedHandlerParamType))
+    return ContractViolationLookupResult = Failure::MalformedHandlerFunction;
+
   StdHandleContractViolationDecl = HandlerDecl;
   return ContractViolationLookupResult = Failure::None;
 }
@@ -22244,16 +22305,25 @@ Sema::LookupContractViolationHandler(SourceLocation Loc) {
 ///
 /// Builds a CompoundStmt equivalent to:
 ///   {
-///     contract_violation v{file, func, comment, line, kind, detection_mode};
-///     handle_contract_violation(v);
+///     auto __contract_violation = __builtin layout-compatible object;
+///     handle_contract_violation(reinterpret_cast<const contract_violation &>(
+///         __contract_violation));
 ///   }
-/// Private fields are initialized via InitListExpr (the compiler is the
-/// implementation of this class, like std::source_location::__impl).
+///
+/// This mirrors the current GCC/libstdc++ consumption path on purpose.
+/// The goal here is ABI interoperability with libstdc++, not preserving only
+/// the paper's abstract library boundary.
 Stmt *Sema::BuildContractHandlerBody(SourceLocation ContractLoc,
                                      SourceRange PredicateRange,
                                      unsigned KindVal,
                                      FunctionDecl *EnclosingFD) {
   using Failure = ContractViolationLookupFailure;
+
+  // In ignore mode the predicate is not evaluated, so no violation handler is
+  // ever invoked and the program does not need the std::contracts support API.
+  if (getLangOpts().getContractViolationMode() ==
+      LangOptions::ContractViolationModeKind::Ignore)
+    return nullptr;
 
   auto Result = LookupContractViolationHandler(ContractLoc);
   if (Result != Failure::None) {
@@ -22265,13 +22335,8 @@ Stmt *Sema::BuildContractHandlerBody(SourceLocation ContractLoc,
     return nullptr;
   }
 
-  SourceManager &SM = getSourceManager();
-  PresumedLoc PLoc = SM.getPresumedLoc(ContractLoc);
-  StringRef FileName = PLoc.isValid() ? PLoc.getFilename() : "<unknown>";
-  unsigned Line = PLoc.isValid() ? PLoc.getLine() : 0;
-  std::string FuncName =
-      EnclosingFD ? EnclosingFD->getQualifiedNameAsString() : "";
   // "the predicate of the contract assertion as a string" ([support.contract.cviol]).
+  SourceManager &SM = getSourceManager();
   StringRef Comment = Lexer::getSourceText(
       CharSourceRange::getTokenRange(PredicateRange), SM,
       getLangOpts());
@@ -22290,72 +22355,116 @@ Stmt *Sema::BuildContractHandlerBody(SourceLocation ContractLoc,
         CK_ArrayToPointerDecay, SL, nullptr, VK_PRValue, FPOptionsOverride());
   };
 
-  SmallVector<Expr *, 6> InitExprs;
-  for (const auto *Field : StdContractViolationDecl->fields()) {
-    StringRef Name = Field->getName();
-    Expr *Init = nullptr;
-    if (Name == "_M_file") {
-      Init = MakeStringExpr(FileName);
-    } else if (Name == "_M_function") {
-      Init = MakeStringExpr(FuncName);
-    } else if (Name == "_M_comment") {
-      Init = MakeStringExpr(Comment);
-    } else if (Name == "_M_line") {
-      Init = IntegerLiteral::Create(Context, llvm::APInt(32, Line),
-                                    Context.UnsignedIntTy, ContractLoc);
-    } else if (Name == "_M_kind" || Name == "_M_detection_mode") {
-      unsigned Val = (Name == "_M_kind") ? KindVal : 0;
-      QualType EnumTy = (Name == "_M_kind")
-                            ? Context.getTypeDeclType(
-                                  static_cast<const TypeDecl *>(
-                                      StdContractKindDecl))
-                            : Context.getTypeDeclType(
-                                  static_cast<const TypeDecl *>(
-                                      StdDetectionModeDecl));
-      Expr *IntVal = IntegerLiteral::Create(Context, llvm::APInt(8, Val),
-                                            Context.UnsignedCharTy,
-                                            ContractLoc);
-      Init = ImplicitCastExpr::Create(Context, EnumTy, CK_IntegralCast,
-                                      IntVal, nullptr, VK_PRValue,
-                                      FPOptionsOverride());
-    }
-    if (Init)
-      InitExprs.push_back(Init);
-  }
+  auto MakeEnumExpr = [&](EnumDecl *Enum, unsigned Val) -> Expr * {
+    QualType EnumTy =
+        Context.getTypeDeclType(static_cast<const TypeDecl *>(Enum));
+    Expr *IntVal = IntegerLiteral::Create(Context, llvm::APInt(16, Val),
+                                          Context.UnsignedShortTy,
+                                          ContractLoc);
+    return ImplicitCastExpr::Create(Context, EnumTy, CK_IntegralCast, IntVal,
+                                    nullptr, VK_PRValue,
+                                    FPOptionsOverride());
+  };
 
-  QualType ViolationType = Context.getTypeDeclType(
+  auto MakeNullVoidPtr = [&]() -> Expr * {
+    return ImplicitCastExpr::Create(Context, Context.VoidPtrTy, CK_NullToPointer,
+                                    new (Context)
+                                        GNUNullExpr(Context.LongTy, ContractLoc),
+                                    nullptr, VK_PRValue,
+                                    FPOptionsOverride());
+  };
+
+  unsigned SemanticVal = 3;
+  if (getLangOpts().getContractViolationMode() ==
+      LangOptions::ContractViolationModeKind::Observe)
+    SemanticVal = 2;
+
+  ExprResult SourceLocExpr =
+      ActOnSourceLocExpr(SourceLocIdentKind::SourceLocStruct, ContractLoc,
+                         ContractLoc);
+  if (SourceLocExpr.isInvalid())
+    return nullptr;
+
+  Expr *SourceLocAsVoid =
+      ImpCastExprToType(SourceLocExpr.get(),
+                        Context.getPointerType(Context.VoidTy.withConst()),
+                        CK_BitCast)
+          .get();
+
+  CXXRecordDecl *LayoutDecl =
+      CXXRecordDecl::Create(Context, TagTypeKind::Struct, EnclosingFD,
+                            ContractLoc, ContractLoc, /*Id=*/nullptr);
+  LayoutDecl->setImplicit();
+  LayoutDecl->startDefinition();
+
+  SmallVector<Expr *, 8> InitExprs;
+  InitExprs.push_back(IntegerLiteral::Create(Context, llvm::APInt(16, 1),
+                                             Context.UnsignedShortTy,
+                                             ContractLoc));
+  InitExprs.push_back(MakeEnumExpr(StdAssertionKindDecl, KindVal));
+  InitExprs.push_back(MakeEnumExpr(StdEvaluationSemanticDecl, SemanticVal));
+  InitExprs.push_back(MakeEnumExpr(StdDetectionModeDecl, 1));
+  InitExprs.push_back(MakeStringExpr(Comment));
+  InitExprs.push_back(SourceLocAsVoid);
+  InitExprs.push_back(MakeNullVoidPtr());
+
+  for (FieldDecl *Field : StdContractViolationDecl->fields()) {
+    TypeSourceInfo *TSI = Context.getTrivialTypeSourceInfo(Field->getType(),
+                                                           ContractLoc);
+    FieldDecl *LayoutField = FieldDecl::Create(
+        Context, LayoutDecl, ContractLoc, ContractLoc, Field->getIdentifier(),
+        Field->getType(), TSI, nullptr, false, InClassInitStyle::ICIS_NoInit);
+    LayoutField->setImplicit();
+    LayoutField->setAccess(AS_public);
+    LayoutDecl->addDecl(LayoutField);
+  }
+  LayoutDecl->completeDefinition();
+  EnclosingFD->addDecl(LayoutDecl);
+
+    QualType ViolationType = Context.getTypeDeclType(
       static_cast<const TypeDecl *>(StdContractViolationDecl));
+  QualType LayoutType =
+      Context.getTypeDeclType(cast<TypeDecl>(LayoutDecl));
+  auto *InitList = new (Context)
+      InitListExpr(Context, ContractLoc, InitExprs, ContractLoc, false);
+  InitList->setType(LayoutType);
+
   VarDecl *VD = VarDecl::Create(
       Context, EnclosingFD, ContractLoc, ContractLoc,
-      &Context.Idents.get("__contract_violation"), ViolationType,
-      Context.getTrivialTypeSourceInfo(ViolationType, ContractLoc), SC_None);
+      &Context.Idents.get("__contract_violation"), LayoutType,
+      Context.getTrivialTypeSourceInfo(LayoutType, ContractLoc), SC_None);
   VD->setImplicit();
 
-  InitListExpr *ILE =
-      new (Context) InitListExpr(Context, ContractLoc, InitExprs, ContractLoc,
-                                false);
-  ILE->setType(ViolationType);
-  VD->setInit(ILE);
-
-  DeclStmt *DS =
-      new (Context) DeclStmt(DeclGroupRef(VD), ContractLoc, ContractLoc);
+  DeclStmt *DS = nullptr;
 
   // ContextRAII: BuildCallExpr checks scoping; set CurContext to the
-  // enclosing function so the VarDecl reference resolves correctly.
+  // enclosing function while building the synthesized calls.
   Expr *Call;
   {
     ContextRAII SavedContext(*this, EnclosingFD);
+
+    AddInitializerToDecl(VD, InitList, /*DirectInit=*/false);
+    DS = new (Context) DeclStmt(DeclGroupRef(VD), ContractLoc, ContractLoc);
 
     DeclRefExpr *HandlerRef = BuildDeclRefExpr(
         StdHandleContractViolationDecl,
         StdHandleContractViolationDecl->getType(), VK_LValue, ContractLoc);
 
-    Expr *ViolationRef =
-        BuildDeclRefExpr(VD, ViolationType, VK_LValue, ContractLoc);
+    Expr *LayoutExpr = BuildDeclRefExpr(VD, LayoutType, VK_LValue, ContractLoc);
+    ExprResult ViolationExpr = BuildCXXNamedCast(
+        ContractLoc, tok::kw_reinterpret_cast,
+        Context.getTrivialTypeSourceInfo(
+            Context.getLValueReferenceType(ViolationType.withConst()),
+            ContractLoc),
+        LayoutExpr, SourceRange(), SourceRange(ContractLoc, ContractLoc));
+    if (ViolationExpr.isInvalid())
+      return nullptr;
+
+    Expr *ViolationExprPtr = ViolationExpr.get();
 
     ExprResult CallResult =
         BuildCallExpr(/*Scope=*/nullptr, HandlerRef, ContractLoc,
-                      MultiExprArg(&ViolationRef, 1), ContractLoc);
+                      MultiExprArg(&ViolationExprPtr, 1), ContractLoc);
     if (CallResult.isInvalid())
       return nullptr;
     Call = CallResult.get();

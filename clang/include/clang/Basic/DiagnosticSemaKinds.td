@@ -1775,8 +1775,6 @@ def err_contracts_on_virtual_override : Error<
   "contracts may not be specified on an overriding function">;
 def err_contracts_on_virtual : Error<
   "contracts may not be specified on a virtual function at this time">;
-def err_contracts_on_ctor_dtor : Error<
-  "contracts may not be specified on a %select{constructor|destructor}0">;
 def err_contracts_on_deleted : Error<
   "contracts may not be specified on a deleted function">;
 def err_contracts_on_defaulted : Error<
@@ -1787,6 +1785,12 @@ def err_contracts_on_type_alias : Error<
   "contracts may not be specified on a type alias">;
 def err_contract_postcondition_nonconst_param : Error<
   "parameter %0 used in a postcondition predicate must be const-qualified">;
+def err_contract_constructor_pre_this : Error<
+  "constructor precondition cannot reference 'this'">;
+def err_contract_destructor_post_this : Error<
+  "destructor postcondition cannot reference 'this'">;
+def err_contract_predicate_coroutine : Error<
+  "contract predicate cannot contain %0">;
 def err_contract_predicate_modification : Error<
   "contract predicate cannot modify %select{variable|'this'}0">;
 def err_contract_predicate_nonconst_call : Error<
@@ -1799,10 +1803,12 @@ def err_contract_violation_handler_not_found : Error<
   "namespace 'std::contracts' not found|"
   "class 'std::contracts::contract_violation' not found|"
   "class 'std::contracts::contract_violation' is incomplete|"
-  "enum 'std::contracts::contract_kind' not found|"
-  "enum 'std::contracts::detection_mode_t' not found|"
-  "class 'std::contracts::contract_violation' does not have the expected field layout|"
-  "function 'std::contracts::handle_contract_violation' not found"
+  "class 'std::contracts::contract_violation' does not have the expected libstdc++ layout|"
+  "enum 'std::contracts::assertion_kind' not found|"
+  "enum 'std::contracts::evaluation_semantic' not found|"
+  "enum 'std::contracts::detection_mode' not found|"
+  "function 'std::contracts::handle_contract_violation' not found|"
+  "function 'std::contracts::handle_contract_violation' does not have the expected signature"
   "}0; include <contracts> to use contract assertions">;
 
 def subst_user_defined_msg : TextSubstitution<
