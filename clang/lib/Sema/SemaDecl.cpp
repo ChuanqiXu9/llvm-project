@@ -27,6 +27,7 @@
 #include "clang/AST/MangleNumberingContext.h"
 #include "clang/AST/NonTrivialTypeVisitor.h"
 #include "clang/AST/Randstruct.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/Builtins.h"
@@ -61,6 +62,7 @@
 #include "clang/Sema/SemaSwift.h"
 #include "clang/Sema/SemaWasm.h"
 #include "clang/Sema/Template.h"
+#include "TreeTransform.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLForwardCompat.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -3726,6 +3728,24 @@ static void adjustDeclContextForDeclaratorDecl(DeclaratorDecl *NewD,
     FixSemaDC(VD->getDescribedVarTemplate());
 }
 
+static bool HasUnparsedContractPredicate(const FunctionDecl *FD) {
+  for (auto *Pre = FD->getDirectPreConditions(); Pre; Pre = Pre->getNext())
+    if (!Pre->isInvalid() && !Pre->getPredicate())
+      return true;
+  for (auto *Post = FD->getDirectPostConditions(); Post; Post = Post->getNext())
+    if (!Post->isInvalid() && !Post->getPredicate())
+      return true;
+  return false;
+}
+
+static bool AreFunctionContractsEquivalent(const FunctionDecl *Old,
+                                           const FunctionDecl *New) {
+  llvm::FoldingSetNodeID OldID, NewID;
+  Old->ProfileContracts(OldID);
+  New->ProfileContracts(NewID);
+  return OldID == NewID;
+}
+
 bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
                              bool MergeTypeWithOld, bool NewDeclIsDefn) {
   // Verify the old decl was also a function.
@@ -4212,6 +4232,27 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
     // but do not necessarily update the type of New.
     if (CheckEquivalentExceptionSpec(Old, New))
       return true;
+
+    // C++26 [dcl.contract.func]: contract consistency across redeclarations.
+    // Explicit template specializations are distinct functions and can have
+    // their own contracts (or no contracts), so skip the check for them.
+    bool IsExplicitSpecialization =
+        New->getTemplateSpecializationKind() == TSK_ExplicitSpecialization;
+    if (New->hasContracts() && !IsExplicitSpecialization) {
+      if (!Old->hasContracts()) {
+        Diag(New->getLocation(), diag::err_contracts_on_non_first_declaration);
+        Diag(Old->getLocation(), diag::note_previous_declaration);
+        return true;
+      }
+      if (!HasUnparsedContractPredicate(Old) &&
+          !HasUnparsedContractPredicate(New)) {
+        if (!AreFunctionContractsEquivalent(Old, New)) {
+          Diag(New->getLocation(), diag::err_contracts_mismatch_redeclaration);
+          Diag(Old->getLocation(), diag::note_previous_declaration);
+          return true;
+        }
+      }
+    }
 
     // C++11 [dcl.attr.noreturn]p1:
     //   The first declaration of a function shall specify the noreturn
@@ -10897,6 +10938,136 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
           NewFD->setInvalidDecl();
     }
 
+    if (D.hasContractSpecifiers()) {
+      // P2900R14 [dcl.contract.func]p1: Contracts are not allowed on
+      // constructors, destructors, deleted functions, or defaulted functions.
+      // Check for deleted/defaulted first, as they are more specific.
+      if (NewFD->isDeletedAsWritten()) {
+        Diag(NewFD->getLocation(), diag::err_contracts_on_deleted);
+      } else if (NewFD->isDefaulted()) {
+        Diag(NewFD->getLocation(), diag::err_contracts_on_defaulted);
+      } else if (isa<CXXConstructorDecl>(NewFD)) {
+        Diag(NewFD->getLocation(), diag::err_contracts_on_ctor_dtor) << 0;
+      } else if (isa<CXXDestructorDecl>(NewFD)) {
+        Diag(NewFD->getLocation(), diag::err_contracts_on_ctor_dtor) << 1;
+      } else {
+        ActOnFunctionContractSpecifiers(NewFD, D);
+      }
+    } else if (FunctionTemplateDecl *PrimaryTemplate = NewFD->getPrimaryTemplate()) {
+      // P2900R14 [dcl.contract.func]: Explicit specializations inherit contracts
+      // from the primary template if they don't have their own contracts.
+      FunctionDecl *TemplatedDecl = PrimaryTemplate->getTemplatedDecl();
+      if (TemplatedDecl && TemplatedDecl->hasContracts()) {
+        // Create a multi-level template argument list for substitution.
+        MultiLevelTemplateArgumentList MultiLevelArgs;
+        MultiLevelArgs.addOuterTemplateArguments(
+            PrimaryTemplate, NewFD->getTemplateSpecializationArgs()->asArray(),
+            /*Final=*/true);
+
+        // Create an instantiation context for substituting the contracts.
+        InstantiatingTemplate Inst(*this, NewFD->getLocation(), PrimaryTemplate,
+                                   NewFD->getTemplateSpecializationArgs()->asArray(),
+                                   CodeSynthesisContext::ExplicitTemplateArgumentSubstitution);
+        if (Inst.isInvalid())
+          return NewFD;
+
+        // Set up a local instantiation scope for parameter substitution.
+        LocalInstantiationScope Scope(*this);
+
+        // Enter the function context for substitution.
+        ContextRAII savedContext(*this, NewFD);
+
+        // Map old parameters to new parameters for substitution.
+        for (unsigned I = 0, E = TemplatedDecl->getNumParams(); I < E; ++I) {
+          ParmVarDecl *OldParam = TemplatedDecl->getParamDecl(I);
+          ParmVarDecl *NewParam = NewFD->getParamDecl(I);
+          Scope.InstantiatedLocal(OldParam, NewParam);
+        }
+
+        // Copy pre-conditions from the primary template.
+        PreContractAnnotation *PreHead = nullptr, *PreTail = nullptr;
+        for (auto *Pre = TemplatedDecl->getPreConditions(); Pre; Pre = Pre->getNext()) {
+          if (Pre->isInvalid() || !Pre->getPredicate())
+            continue;
+          // Instantiate the predicate with the template arguments of the
+          // explicit specialization.
+          ExprResult Pred = SubstExpr(Pre->getPredicate(), MultiLevelArgs);
+          if (Pred.isInvalid())
+            continue;
+          if (!Pred.get()->isTypeDependent()) {
+            Pred = PerformContextuallyConvertToBool(Pred.get());
+            if (Pred.isInvalid())
+              continue;
+          }
+          auto *Ann = new (Context) PreContractAnnotation(
+              Pred.get(), Pre->getKeywordLoc(), Pre->getLParenLoc(),
+              Pre->getRParenLoc());
+          if (PreTail)
+            PreTail->setNext(Ann);
+          else
+            PreHead = Ann;
+          PreTail = Ann;
+        }
+        NewFD->setPreConditions(PreHead);
+
+        // Copy post-conditions from the primary template.
+        PostContractAnnotation *PostHead = nullptr, *PostTail = nullptr;
+        for (auto *Post = TemplatedDecl->getPostConditions(); Post; Post = Post->getNext()) {
+          if (Post->isInvalid() || !Post->getPredicate())
+            continue;
+          VarDecl *NewRV = nullptr;
+          if (VarDecl *OldRV = Post->getResultVar()) {
+            QualType RetTy = NewFD->getReturnType().getNonReferenceType();
+            RetTy.addConst();
+            NewRV = VarDecl::Create(Context, NewFD,
+                                    OldRV->getLocation(), OldRV->getLocation(),
+                                    OldRV->getIdentifier(), RetTy,
+                                    Context.getTrivialTypeSourceInfo(RetTy),
+                                    SC_None);
+            NewRV->setImplicit();
+            NewRV->setReferenced();
+            NewRV->markUsed(Context);
+            Scope.InstantiatedLocal(OldRV, NewRV);
+          }
+          ExprResult Pred = SubstExpr(Post->getPredicate(), MultiLevelArgs);
+          if (Pred.isInvalid())
+            continue;
+          if (!Pred.get()->isTypeDependent()) {
+            Pred = PerformContextuallyConvertToBool(Pred.get());
+            if (Pred.isInvalid())
+              continue;
+          }
+          auto *Ann = new (Context) PostContractAnnotation(
+              Pred.get(), Post->getKeywordLoc(), Post->getLParenLoc(),
+              Post->getRParenLoc(), NewRV);
+          if (PostTail)
+            PostTail->setNext(Ann);
+          else
+            PostHead = Ann;
+          PostTail = Ann;
+        }
+        NewFD->setPostConditions(PostHead);
+
+        // Build handler bodies for the inherited contracts.
+        if (!NewFD->isDependentContext()) {
+          for (auto *Pre = PreHead; Pre; Pre = Pre->getNext()) {
+            if (Pre->isInvalid() || !Pre->getPredicate())
+              continue;
+            Pre->setHandlerBody(BuildContractHandlerBody(
+                Pre->getKeywordLoc(), Pre->getPredicate()->getSourceRange(),
+                /*KindVal=*/0, NewFD));
+          }
+          for (auto *Post = PostHead; Post; Post = Post->getNext()) {
+            if (Post->isInvalid() || !Post->getPredicate())
+              continue;
+            Post->setHandlerBody(BuildContractHandlerBody(
+                Post->getKeywordLoc(), Post->getPredicate()->getSourceRange(),
+                /*KindVal=*/1, NewFD));
+          }
+        }
+      }
+    }
+
     // Perform semantic checking on the function declaration.
     if (!NewFD->isInvalidDecl() && NewFD->isMain())
       CheckMain(NewFD, D.getDeclSpec());
@@ -11290,9 +11461,6 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
   // `routine(name)`.
   if (getLangOpts().OpenACC)
     OpenACC().ActOnFunctionDeclarator(NewFD);
-
-  if (D.hasContractSpecifiers())
-    ActOnFunctionContractSpecifiers(NewFD, D);
 
   return NewFD;
 }
@@ -16799,6 +16967,10 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body, bool IsInstantiation,
         }
       }
 
+      // For functions with deduced return types, rebuild post-conditions
+      // that had DependentTy result variables.
+      RebuildDeducedReturnTypePostConditions(FD);
+
       // If the function implicitly returns zero (like 'main') or is naked,
       // don't complain about missing return statements.
       // Clang implicitly returns 0 in C89 mode, but that's considered an
@@ -21351,11 +21523,39 @@ VarDecl *Sema::ActOnPostConditionResultName(Scope *S, Declarator &D,
   QualType RetTy;
   if (!TrailingReturnType.get().isNull()) {
     RetTy = GetTypeFromParser(TrailingReturnType);
+    // Check if the trailing return type is auto (deduced)
+    if (RetTy->getContainedAutoType()) {
+      // Use DependentTy as a placeholder. The actual type will be substituted
+      // after return type deduction in ActOnFinishFunctionBody.
+      RetTy = Context.DependentTy;
+    }
   } else {
     // The function chunk hasn't been added to the Declarator yet, so
     // GetTypeForDeclarator returns the DeclSpec base type (the return type).
     TypeSourceInfo *TSI = GetTypeForDeclarator(D);
     RetTy = TSI->getType();
+
+    // For lambda expressions, the function chunk has already been added to
+    // the Declarator before parsing contract specifiers, so GetTypeForDeclarator
+    // returns a function type. Extract the return type from it.
+    if (const auto *FPT = RetTy->getAs<FunctionProtoType>()) {
+      RetTy = FPT->getReturnType();
+      // For lambdas with deduced return types (auto), use DependentTy as a
+      // placeholder. The actual type will be substituted after return type
+      // deduction in ActOnFinishFunctionBody.
+      if (RetTy->getContainedAutoType() &&
+          D.getContext() == DeclaratorContext::LambdaExpr) {
+        RetTy = Context.DependentTy;
+      }
+    }
+
+    // For regular functions with deduced return type (auto), use DependentTy
+    // as a placeholder. The actual type will be substituted after return type
+    // deduction in ActOnFinishFunctionBody.
+    if (RetTy->getContainedAutoType() &&
+        D.getContext() != DeclaratorContext::LambdaExpr) {
+      RetTy = Context.DependentTy;
+    }
   }
   assert(!RetTy.isNull() && "return type should never be null here");
 
@@ -21366,7 +21566,11 @@ VarDecl *Sema::ActOnPostConditionResultName(Scope *S, Declarator &D,
 
   RetTy = RetTy.getNonReferenceType().withConst();
 
-  auto *ResultVar = VarDecl::Create(Context, CurContext, ResultNameLoc,
+  // Use the translation unit as the DeclContext to avoid issues with
+  // dependent contexts in class templates. The VarDecl will be updated
+  // with the correct DeclContext later in ActOnFunctionContractSpecifiers.
+  DeclContext *DC = Context.getTranslationUnitDecl();
+  auto *ResultVar = VarDecl::Create(Context, DC, ResultNameLoc,
                                     ResultNameLoc, ResultName, RetTy,
                                     /*TInfo=*/nullptr, SC_None);
   ResultVar->setImplicit();
@@ -21384,21 +21588,206 @@ VarDecl *Sema::ActOnPostConditionResultName(Scope *S, Declarator &D,
 /// in declaration order.
 void Sema::ActOnFunctionContractSpecifiers(FunctionDecl *FD,
                                            const Declarator &D) {
+  // P2900R14: contracts on virtual functions are not supported.
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+    if (MD->isVirtual()) {
+      // Check if this is an override function - report more specific error
+      bool IsOverride = false;
+      for (const auto *Overridden : MD->overridden_methods()) {
+        if (Overridden->isVirtual()) {
+          IsOverride = true;
+          Diag(FD->getLocation(), diag::err_contracts_on_virtual_override);
+          Diag(Overridden->getLocation(),
+               diag::note_overridden_virtual_function);
+          break;
+        }
+      }
+      if (!IsOverride) {
+        Diag(FD->getLocation(), diag::err_contracts_on_virtual);
+      }
+      return;
+    }
+  }
+
   PreContractAnnotation *PreHead = nullptr, *PreTail = nullptr;
   PostContractAnnotation *PostHead = nullptr, *PostTail = nullptr;
 
   for (const auto &CS : D.getContractSpecifiers()) {
+    Expr *Pred = CS.Predicate;
+    bool Invalid = !Pred;
+
+    // If we have cached tokens, create a placeholder annotation so that
+    // hasContracts() returns true. The predicate will be parsed later by
+    // ParseLexedMethodDeclaration and ActOnLateParsedContractSpecifier.
+    if (!Pred && CS.PredicateTokens) {
+      if (CS.CKind == Declarator::ContractSpecInfo::Pre) {
+        auto *Ann = new (Context) PreContractAnnotation(
+            /*Predicate=*/nullptr, CS.KwLoc, CS.LParenLoc, CS.RParenLoc);
+        if (PreTail)
+          PreTail->setNext(Ann);
+        else
+          PreHead = Ann;
+        PreTail = Ann;
+      } else {
+        auto *Ann = new (Context) PostContractAnnotation(
+            /*Predicate=*/nullptr, CS.KwLoc, CS.LParenLoc, CS.RParenLoc,
+            /*ResultVar=*/nullptr);
+        if (PostTail)
+          PostTail->setNext(Ann);
+        else
+          PostHead = Ann;
+        PostTail = Ann;
+      }
+      continue;
+    }
+
+    if (Pred && !Pred->isTypeDependent()) {
+      ExprResult Converted = PerformContextuallyConvertToBool(Pred);
+      if (Converted.isInvalid())
+        Invalid = true;
+      else
+        Pred = Converted.get();
+    }
+
+    // P2900R14 §3.4.4: Parameters used in postcondition predicates must be const
+    if (!Invalid && CS.CKind == Declarator::ContractSpecInfo::Post && Pred) {
+      class NonConstParamChecker : public RecursiveASTVisitor<NonConstParamChecker> {
+        Sema &S;
+        bool FoundError = false;
+      public:
+        NonConstParamChecker(Sema &S) : S(S) {}
+
+        bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+          if (auto *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+            if (!PVD->getType().isConstQualified()) {
+              S.Diag(DRE->getLocation(),
+                     diag::err_contract_postcondition_nonconst_param)
+                  << PVD;
+              FoundError = true;
+            }
+          }
+          return !FoundError;
+        }
+
+        bool hasError() const { return FoundError; }
+      } Checker(*this);
+
+      Checker.TraverseStmt(Pred);
+      if (Checker.hasError())
+        Invalid = true;
+    }
+
+    // P2900R14 §3.4.2: All entities referenced in a predicate are implicitly
+    // const-qualified, so modifications are not allowed.
+    if (!Invalid && Pred) {
+      class PredicateModificationChecker
+          : public RecursiveASTVisitor<PredicateModificationChecker> {
+        Sema &S;
+        bool FoundError = false;
+      public:
+        PredicateModificationChecker(Sema &S) : S(S) {}
+
+        bool VisitBinaryOperator(BinaryOperator *BO) {
+          if (BO->isAssignmentOp()) {
+            S.Diag(BO->getOperatorLoc(),
+                   diag::err_contract_predicate_modification)
+                << 0; // 0 for variable
+            FoundError = true;
+          }
+          return !FoundError;
+        }
+
+        bool VisitUnaryOperator(UnaryOperator *UO) {
+          if (UO->isIncrementDecrementOp()) {
+            S.Diag(UO->getOperatorLoc(),
+                   diag::err_contract_predicate_modification)
+                << 0; // 0 for variable
+            FoundError = true;
+          }
+          return !FoundError;
+        }
+
+        bool VisitCXXMemberCallExpr(CXXMemberCallExpr *MCE) {
+          if (auto *MD = MCE->getMethodDecl()) {
+            if (!MD->isConst()) {
+              S.Diag(MCE->getBeginLoc(),
+                     diag::err_contract_predicate_nonconst_call)
+                  << MD;
+              FoundError = true;
+            }
+          }
+          return !FoundError;
+        }
+
+        bool hasError() const { return FoundError; }
+      } ModChecker(*this);
+
+      ModChecker.TraverseStmt(Pred);
+      if (ModChecker.hasError())
+        Invalid = true;
+    }
+
+    // P2900R14 §3.4.8: Lambda contract predicates cannot implicitly capture
+    // variables from the enclosing scope.
+    if (!Invalid && Pred && isLambdaCallOperator(FD)) {
+      LambdaScopeInfo *LSI = getCurLambda();
+      if (LSI && LSI->CaptureDefaultLoc.isValid()) {
+        class ImplicitCaptureChecker
+            : public RecursiveASTVisitor<ImplicitCaptureChecker> {
+          Sema &S;
+          LambdaScopeInfo *LSI;
+          bool FoundError = false;
+        public:
+          ImplicitCaptureChecker(Sema &S, LambdaScopeInfo *LSI)
+              : S(S), LSI(LSI) {}
+
+          bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+            ValueDecl *VD = DRE->getDecl();
+            if (!VD || isa<ParmVarDecl>(VD))
+              return true;
+
+            // Check if this variable is captured by the lambda
+            for (unsigned I = 0, N = LSI->Captures.size(); I < N; ++I) {
+              const Capture &Cap = LSI->Captures[I];
+              if (Cap.isVariableCapture() && Cap.getVariable() == VD) {
+                // Found the capture - check if it's explicit
+                // Captures are explicit if their index is less than NumExplicitCaptures
+                if (I >= LSI->NumExplicitCaptures) {
+                  S.Diag(DRE->getLocation(),
+                         diag::err_contract_predicate_implicit_capture)
+                      << VD;
+                  FoundError = true;
+                }
+                break;
+              }
+            }
+            return !FoundError;
+          }
+
+          bool hasError() const { return FoundError; }
+        } CaptureChecker(*this, LSI);
+
+        CaptureChecker.TraverseStmt(Pred);
+        if (CaptureChecker.hasError())
+          Invalid = true;
+      }
+    }
+
     if (CS.CKind == Declarator::ContractSpecInfo::Pre) {
       auto *Ann = new (Context) PreContractAnnotation(
-          CS.Predicate, CS.KwLoc, CS.LParenLoc, CS.RParenLoc);
+          Pred, CS.KwLoc, CS.LParenLoc, CS.RParenLoc);
+      Ann->setInvalid(Invalid);
       if (PreTail)
         PreTail->setNext(Ann);
       else
         PreHead = Ann;
       PreTail = Ann;
     } else {
+      if (CS.ResultVar)
+        CS.ResultVar->setDeclContext(FD);
       auto *Ann = new (Context) PostContractAnnotation(
-          CS.Predicate, CS.KwLoc, CS.LParenLoc, CS.RParenLoc, CS.ResultVar);
+          Pred, CS.KwLoc, CS.LParenLoc, CS.RParenLoc, CS.ResultVar);
+      Ann->setInvalid(Invalid);
       if (PostTail)
         PostTail->setNext(Ann);
       else
@@ -21409,12 +21798,650 @@ void Sema::ActOnFunctionContractSpecifiers(FunctionDecl *FD,
 
   FD->setPreConditions(PreHead);
   FD->setPostConditions(PostHead);
+
+  // Build the handler body for each annotation ([basic.contract.eval] p5).
+  // Only build the handler body if we're not in a dependent context.
+  // For template member functions, the handler body will be built during
+  // template instantiation.
+  // For lambdas with deduced return types, post-conditions with result names
+  // will have DependentTy result variables; skip building handler bodies for
+  // these - they will be rebuilt after return type deduction.
+  if (!FD->isDependentContext()) {
+    for (auto *Pre = PreHead; Pre; Pre = Pre->getNext()) {
+      // For delayed-parsed contracts (member functions), the predicate is nullptr
+      // and will be parsed later; skip building handler bodies for these.
+      if (Pre->isInvalid() || !Pre->getPredicate())
+        continue;
+      Pre->setHandlerBody(BuildContractHandlerBody(
+          Pre->getKeywordLoc(), Pre->getPredicate()->getSourceRange(),
+          /*KindVal=*/0, FD));
+    }
+    for (auto *Post = PostHead; Post; Post = Post->getNext()) {
+      // Skip delayed-parsed contracts (predicate is nullptr)
+      if (Post->isInvalid() || !Post->getPredicate())
+        continue;
+      // Skip post-conditions with DependentTy result variables (lambda with
+      // deduced return type). These will be rebuilt after deduction.
+      if (VarDecl *RV = Post->getResultVar())
+        if (RV->getType()->isDependentType())
+          continue;
+      Post->setHandlerBody(BuildContractHandlerBody(
+          Post->getKeywordLoc(), Post->getPredicate()->getSourceRange(),
+          /*KindVal=*/1, FD));
+    }
+  }
+}
+
+static PreContractAnnotation *FindPendingPreContract(FunctionDecl *FD) {
+  for (auto *Pre = FD->getDirectPreConditions(); Pre; Pre = Pre->getNext())
+    if (!Pre->isInvalid() && !Pre->getPredicate())
+      return Pre;
+  return nullptr;
+}
+
+static PostContractAnnotation *FindPendingPostContract(FunctionDecl *FD) {
+  for (auto *Post = FD->getDirectPostConditions(); Post; Post = Post->getNext())
+    if (!Post->isInvalid() && !Post->getPredicate())
+      return Post;
+  return nullptr;
+}
+
+static void MarkPendingPreContractInvalid(FunctionDecl *FD) {
+  for (auto *Pre = FD->getDirectPreConditions(); Pre; Pre = Pre->getNext()) {
+    if (!Pre->isInvalid() && !Pre->getPredicate()) {
+      Pre->setInvalid();
+      return;
+    }
+  }
+}
+
+static void MarkPendingPostContractInvalid(FunctionDecl *FD) {
+  for (auto *Post = FD->getDirectPostConditions(); Post;
+       Post = Post->getNext()) {
+    if (!Post->isInvalid() && !Post->getPredicate()) {
+      Post->setInvalid();
+      return;
+    }
+  }
+}
+
+void Sema::ActOnLateParsedContractSpecifier(FunctionDecl *FD, bool IsPre,
+                                            Expr *Predicate, VarDecl *ResultVar,
+                                            SourceLocation KwLoc,
+                                            SourceLocation LParenLoc,
+                                            SourceLocation RParenLoc,
+                                            SourceLocation ResultNameLoc) {
+  // P2900R14: contracts on virtual functions are not supported.
+  // Note: We already checked for override in ActOnFunctionContractSpecifiers,
+  // so we only need to check for non-override virtual functions here.
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+    if (MD->isVirtual() && !MD->size_overridden_methods()) {
+      Diag(KwLoc, diag::err_contracts_on_virtual);
+      return;
+    }
+    // For override functions, we already reported the error in
+    // ActOnFunctionContractSpecifiers, so just return without processing.
+    if (MD->size_overridden_methods())
+      return;
+  }
+
+  auto MarkPendingContractInvalid = [&]() {
+    if (IsPre)
+      MarkPendingPreContractInvalid(FD);
+    else
+      MarkPendingPostContractInvalid(FD);
+  };
+
+  if (!Predicate) {
+    MarkPendingContractInvalid();
+    return;
+  }
+
+  // Perform the same checks as ActOnFunctionContractSpecifiers
+  if (Predicate && !Predicate->isTypeDependent()) {
+    ExprResult Converted = PerformContextuallyConvertToBool(Predicate);
+    if (Converted.isInvalid()) {
+      MarkPendingContractInvalid();
+      return;
+    }
+    Predicate = Converted.get();
+  }
+
+  // P2900R14 §3.4.4: Parameters used in postcondition predicates must be const
+  if (!IsPre && Predicate) {
+    class NonConstParamChecker
+        : public RecursiveASTVisitor<NonConstParamChecker> {
+      Sema &S;
+      bool FoundError = false;
+
+    public:
+      NonConstParamChecker(Sema &S) : S(S) {}
+
+      bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+        if (auto *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+          if (!PVD->getType().isConstQualified()) {
+            S.Diag(DRE->getLocation(),
+                   diag::err_contract_postcondition_nonconst_param)
+                << PVD;
+            FoundError = true;
+          }
+        }
+        return !FoundError;
+      }
+
+      bool hasError() const { return FoundError; }
+    } Checker(*this);
+
+    Checker.TraverseStmt(Predicate);
+    if (Checker.hasError()) {
+      MarkPendingContractInvalid();
+      return;
+    }
+  }
+
+  // P2900R14 §3.4.2: All entities referenced in a predicate are implicitly
+  // const-qualified, so modifications are not allowed.
+  if (Predicate) {
+    class PredicateModificationChecker
+        : public RecursiveASTVisitor<PredicateModificationChecker> {
+      Sema &S;
+      bool FoundError = false;
+
+    public:
+      PredicateModificationChecker(Sema &S) : S(S) {}
+
+      bool VisitBinaryOperator(BinaryOperator *BO) {
+        if (BO->isAssignmentOp()) {
+          S.Diag(BO->getOperatorLoc(),
+                 diag::err_contract_predicate_modification)
+              << 0; // 0 for variable
+          FoundError = true;
+        }
+        return !FoundError;
+      }
+
+      bool VisitUnaryOperator(UnaryOperator *UO) {
+        if (UO->isIncrementDecrementOp()) {
+          S.Diag(UO->getOperatorLoc(),
+                 diag::err_contract_predicate_modification)
+              << 0; // 0 for variable
+          FoundError = true;
+        }
+        return !FoundError;
+      }
+
+      bool VisitCXXMemberCallExpr(CXXMemberCallExpr *MCE) {
+        if (auto *MD = MCE->getMethodDecl()) {
+          if (!MD->isConst()) {
+            S.Diag(MCE->getBeginLoc(),
+                   diag::err_contract_predicate_nonconst_call)
+                << MD;
+            FoundError = true;
+          }
+        }
+        return !FoundError;
+      }
+
+      bool hasError() const { return FoundError; }
+    } ModChecker(*this);
+
+    ModChecker.TraverseStmt(Predicate);
+    if (ModChecker.hasError()) {
+      MarkPendingContractInvalid();
+      return;
+    }
+  }
+
+  // Create the contract annotation
+  if (IsPre) {
+    PreContractAnnotation *Ann = FindPendingPreContract(FD);
+    if (Ann) {
+      Ann->setPredicate(Predicate);
+    } else {
+      Ann = new (Context)
+          PreContractAnnotation(Predicate, KwLoc, LParenLoc, RParenLoc);
+      if (PreContractAnnotation *Tail = FD->getDirectPreConditions()) {
+        while (Tail->getNext())
+          Tail = Tail->getNext();
+        Tail->setNext(Ann);
+      } else {
+        FD->setPreConditions(Ann);
+      }
+    }
+
+    // Build the handler body if not in a dependent context
+    if (!FD->isDependentContext()) {
+      Ann->setHandlerBody(BuildContractHandlerBody(KwLoc,
+                                                   Predicate->getSourceRange(),
+                                                   /*KindVal=*/0, FD));
+    }
+  } else {
+    if (ResultVar)
+      ResultVar->setDeclContext(FD);
+    PostContractAnnotation *Ann = FindPendingPostContract(FD);
+    if (Ann) {
+      Ann->setPredicate(Predicate);
+      Ann->setResultVar(ResultVar);
+    } else {
+      Ann = new (Context) PostContractAnnotation(Predicate, KwLoc, LParenLoc,
+                                                 RParenLoc, ResultVar);
+      if (PostContractAnnotation *Tail = FD->getDirectPostConditions()) {
+        while (Tail->getNext())
+          Tail = Tail->getNext();
+        Tail->setNext(Ann);
+      } else {
+        FD->setPostConditions(Ann);
+      }
+    }
+
+    // Build the handler body if not in a dependent context
+    if (!FD->isDependentContext()) {
+      // Skip post-conditions with DependentTy result variables (lambda with
+      // deduced return type). These will be rebuilt after deduction.
+      if (VarDecl *RV = Ann->getResultVar()) {
+        if (RV->getType()->isDependentType())
+          return;
+      }
+      Ann->setHandlerBody(BuildContractHandlerBody(KwLoc,
+                                                   Predicate->getSourceRange(),
+                                                   /*KindVal=*/1, FD));
+    }
+  }
+}
+
+void Sema::ActOnFinishLateParsedContractSpecifiers(FunctionDecl *FD) {
+  if (!FD || HasUnparsedContractPredicate(FD))
+    return;
+
+  if (FD->getTemplateSpecializationKind() == TSK_ExplicitSpecialization)
+    return;
+
+  FunctionDecl *Old = FD->getPreviousDecl();
+  if (!Old)
+    return;
+
+  if (!Old->hasContracts()) {
+    Diag(FD->getLocation(), diag::err_contracts_on_non_first_declaration);
+    Diag(Old->getLocation(), diag::note_previous_declaration);
+    return;
+  }
+
+  if (HasUnparsedContractPredicate(Old))
+    return;
+
+  if (!AreFunctionContractsEquivalent(Old, FD)) {
+    Diag(FD->getLocation(), diag::err_contracts_mismatch_redeclaration);
+    Diag(Old->getLocation(), diag::note_previous_declaration);
+  }
 }
 
 StmtResult Sema::ActOnContractAssert(SourceLocation ContractAssertLoc,
-                                     Expr *Predicate,
-                                     SourceLocation LParenLoc,
+                                     Expr *Predicate, SourceLocation LParenLoc,
                                      SourceLocation RParenLoc) {
-  return new (Context)
+  if (Predicate && !Predicate->isTypeDependent()) {
+    ExprResult Converted = PerformContextuallyConvertToBool(Predicate);
+    if (Converted.isInvalid())
+      return StmtError();
+    Predicate = Converted.get();
+  }
+
+  auto *CAS = new (Context)
       ContractAssertStmt(Predicate, ContractAssertLoc, LParenLoc, RParenLoc);
+  // contract_kind::assert_kind = 2 ([support.contract.cviol]).
+  // Only build the handler body if we're not in a dependent context.
+  auto *FD = cast<FunctionDecl>(CurContext);
+  if (!FD->isDependentContext()) {
+    CAS->setHandlerBody(BuildContractHandlerBody(ContractAssertLoc,
+                                                 Predicate->getSourceRange(),
+                                                 /*KindVal=*/2, FD));
+  }
+  return CAS;
+}
+
+/// Look up and validate the std::contracts types required for contract violation
+/// handling as specified in [support.contract.cviol] and [support.contract.handle].
+///
+/// Per [basic.contract.eval] p5, when a contract predicate evaluates to false,
+/// the implementation constructs a contract_violation object and calls
+/// handle_contract_violation. This function validates that the user-provided
+/// std::contracts namespace contains all required types with correct signatures.
+///
+/// Required types from [support.contract.cviol]:
+///   - contract_violation: class with fields
+///     * _M_file, _M_function, _M_comment: const char*
+///     * _M_line: unsigned int
+///     * _M_kind: contract_kind enum
+///     * _M_detection_mode: detection_mode_t enum
+///   - contract_kind: enum class { pre, post, assert_kind }
+///   - detection_mode_t: enum class { predicate_false }
+///
+/// Required function from [support.contract.handle]:
+///   - handle_contract_violation(const contract_violation&)
+///
+/// Results are cached to avoid repeated lookups across multiple contracts.
+/// Returns None if all required types and functions are found and valid,
+/// otherwise returns a specific failure reason.
+Sema::ContractViolationLookupFailure
+Sema::LookupContractViolationHandler(SourceLocation Loc) {
+  using Failure = ContractViolationLookupFailure;
+
+  if (ContractViolationLookupDone)
+    return StdHandleContractViolationDecl ? Failure::None
+                                          : ContractViolationLookupResult;
+  ContractViolationLookupDone = true;
+
+  NamespaceDecl *StdNS = getStdNamespace();
+  if (!StdNS)
+    return ContractViolationLookupResult = Failure::MissingNamespace;
+
+  IdentifierInfo &ContractsII = PP.getIdentifierTable().get("contracts");
+  LookupResult ContractsResult(*this, &ContractsII, Loc, LookupNamespaceName);
+  if (!LookupQualifiedName(ContractsResult, StdNS))
+    return ContractViolationLookupResult = Failure::MissingNamespace;
+
+  auto *ContractsNS = ContractsResult.getAsSingle<NamespaceDecl>();
+  if (!ContractsNS)
+    return ContractViolationLookupResult = Failure::MissingNamespace;
+
+  // Look up std::contracts::contract_violation ([support.contract.cviol]).
+  IdentifierInfo &CVII = PP.getIdentifierTable().get("contract_violation");
+  LookupResult CVResult(*this, &CVII, Loc, LookupOrdinaryName);
+  if (!LookupQualifiedName(CVResult, ContractsNS))
+    return ContractViolationLookupResult = Failure::MissingContractViolation;
+
+  auto *ViolationDecl = CVResult.getAsSingle<CXXRecordDecl>();
+  if (!ViolationDecl)
+    return ContractViolationLookupResult = Failure::MissingContractViolation;
+  if (!ViolationDecl->isCompleteDefinition())
+    return ContractViolationLookupResult = Failure::IncompleteContractViolation;
+
+  // Look up std::contracts::contract_kind ([support.contract.cviol]):
+  //   enum class contract_kind { pre, post, assert_kind };
+  IdentifierInfo &CKII = PP.getIdentifierTable().get("contract_kind");
+  LookupResult CKResult(*this, &CKII, Loc, LookupOrdinaryName);
+  if (!LookupQualifiedName(CKResult, ContractsNS))
+    return ContractViolationLookupResult = Failure::MissingContractKind;
+  auto *ContractKindDecl = CKResult.getAsSingle<EnumDecl>();
+  if (!ContractKindDecl)
+    return ContractViolationLookupResult = Failure::MissingContractKind;
+
+  // Look up std::contracts::detection_mode_t ([support.contract.cviol]):
+  //   enum class detection_mode_t { predicate_false };
+  IdentifierInfo &DMII = PP.getIdentifierTable().get("detection_mode_t");
+  LookupResult DMResult(*this, &DMII, Loc, LookupOrdinaryName);
+  if (!LookupQualifiedName(DMResult, ContractsNS))
+    return ContractViolationLookupResult = Failure::MissingDetectionMode;
+  auto *DetectionModeDecl = DMResult.getAsSingle<EnumDecl>();
+  if (!DetectionModeDecl)
+    return ContractViolationLookupResult = Failure::MissingDetectionMode;
+
+  // Validate that contract_violation has the expected field layout per
+  // [support.contract.cviol]. The implementation needs to construct this
+  // object with specific values for file, function, comment, line, kind,
+  // and detection_mode.
+  QualType ContractKindType = Context.getTypeDeclType(
+      static_cast<const TypeDecl *>(ContractKindDecl));
+  QualType DetectionModeType = Context.getTypeDeclType(
+      static_cast<const TypeDecl *>(DetectionModeDecl));
+
+  unsigned FieldCount = 0;
+  for (const auto *F : ViolationDecl->fields()) {
+    StringRef Name = F->getName();
+    if (Name == "_M_file" || Name == "_M_function" || Name == "_M_comment") {
+      // These fields store the source location and predicate text as C strings.
+      if (F->getType() != Context.getPointerType(Context.CharTy.withConst()))
+        return ContractViolationLookupResult = Failure::MalformedContractViolation;
+      FieldCount++;
+    } else if (Name == "_M_line") {
+      // Source line number.
+      if (!F->getType()->isUnsignedIntegerType())
+        return ContractViolationLookupResult = Failure::MalformedContractViolation;
+      FieldCount++;
+    } else if (Name == "_M_kind") {
+      // Contract kind: pre(0), post(1), or assert(2) per [support.contract.cviol].
+      if (F->getType().getCanonicalType() != ContractKindType.getCanonicalType())
+        return ContractViolationLookupResult = Failure::MalformedContractViolation;
+      FieldCount++;
+    } else if (Name == "_M_detection_mode") {
+      // Detection mode: always predicate_false per [support.contract.cviol].
+      if (F->getType().getCanonicalType() != DetectionModeType.getCanonicalType())
+        return ContractViolationLookupResult = Failure::MalformedContractViolation;
+      FieldCount++;
+    } else {
+      // Unknown field - reject the declaration.
+      return ContractViolationLookupResult = Failure::MalformedContractViolation;
+    }
+  }
+  // Must have exactly 6 fields: _M_file, _M_function, _M_comment, _M_line,
+  // _M_kind, _M_detection_mode.
+  if (FieldCount != 6)
+    return ContractViolationLookupResult = Failure::MalformedContractViolation;
+
+  StdContractViolationDecl = ViolationDecl;
+  StdContractKindDecl = ContractKindDecl;
+  StdDetectionModeDecl = DetectionModeDecl;
+
+  // Look up std::contracts::handle_contract_violation ([support.contract.handle]).
+  // This is the function called when a contract predicate is violated.
+  IdentifierInfo &HandlerII =
+      PP.getIdentifierTable().get("handle_contract_violation");
+  LookupResult HandlerResult(*this, &HandlerII, Loc, LookupOrdinaryName);
+  if (!LookupQualifiedName(HandlerResult, ContractsNS))
+    return ContractViolationLookupResult = Failure::MissingHandlerFunction;
+
+  auto *HandlerDecl = HandlerResult.getAsSingle<FunctionDecl>();
+  if (!HandlerDecl)
+    return ContractViolationLookupResult = Failure::MissingHandlerFunction;
+
+  StdHandleContractViolationDecl = HandlerDecl;
+  return ContractViolationLookupResult = Failure::None;
+}
+
+/// "[basic.contract.eval] p5: If the evaluation of a contract assertion
+///  determines that it is violated, the contract-violation handler is
+///  evaluated. [...] The contract-violation handler is the function
+///  std::contracts::handle_contract_violation ([support.contract.handle])."
+///
+/// Builds a CompoundStmt equivalent to:
+///   {
+///     contract_violation v{file, func, comment, line, kind, detection_mode};
+///     handle_contract_violation(v);
+///   }
+/// Private fields are initialized via InitListExpr (the compiler is the
+/// implementation of this class, like std::source_location::__impl).
+Stmt *Sema::BuildContractHandlerBody(SourceLocation ContractLoc,
+                                     SourceRange PredicateRange,
+                                     unsigned KindVal,
+                                     FunctionDecl *EnclosingFD) {
+  using Failure = ContractViolationLookupFailure;
+
+  auto Result = LookupContractViolationHandler(ContractLoc);
+  if (Result != Failure::None) {
+    if (!ContractViolationHandlerDiagEmitted) {
+      Diag(ContractLoc, diag::err_contract_violation_handler_not_found)
+          << static_cast<unsigned>(Result) - 1;
+      ContractViolationHandlerDiagEmitted = true;
+    }
+    return nullptr;
+  }
+
+  SourceManager &SM = getSourceManager();
+  PresumedLoc PLoc = SM.getPresumedLoc(ContractLoc);
+  StringRef FileName = PLoc.isValid() ? PLoc.getFilename() : "<unknown>";
+  unsigned Line = PLoc.isValid() ? PLoc.getLine() : 0;
+  std::string FuncName =
+      EnclosingFD ? EnclosingFD->getQualifiedNameAsString() : "";
+  // "the predicate of the contract assertion as a string" ([support.contract.cviol]).
+  StringRef Comment = Lexer::getSourceText(
+      CharSourceRange::getTokenRange(PredicateRange), SM,
+      getLangOpts());
+
+  auto MakeStringExpr = [&](StringRef Str) -> Expr * {
+    QualType CharTy =
+        Context.adjustStringLiteralBaseType(Context.CharTy.withConst());
+    QualType StrTy = Context.getConstantArrayType(
+        CharTy, llvm::APInt(32, Str.size() + 1), nullptr,
+        ArraySizeModifier::Normal, 0);
+    StringLiteral *SL = StringLiteral::Create(Context, Str,
+                                              StringLiteralKind::Ordinary,
+                                              false, StrTy, ContractLoc);
+    return ImplicitCastExpr::Create(
+        Context, Context.getPointerType(Context.CharTy.withConst()),
+        CK_ArrayToPointerDecay, SL, nullptr, VK_PRValue, FPOptionsOverride());
+  };
+
+  SmallVector<Expr *, 6> InitExprs;
+  for (const auto *Field : StdContractViolationDecl->fields()) {
+    StringRef Name = Field->getName();
+    Expr *Init = nullptr;
+    if (Name == "_M_file") {
+      Init = MakeStringExpr(FileName);
+    } else if (Name == "_M_function") {
+      Init = MakeStringExpr(FuncName);
+    } else if (Name == "_M_comment") {
+      Init = MakeStringExpr(Comment);
+    } else if (Name == "_M_line") {
+      Init = IntegerLiteral::Create(Context, llvm::APInt(32, Line),
+                                    Context.UnsignedIntTy, ContractLoc);
+    } else if (Name == "_M_kind" || Name == "_M_detection_mode") {
+      unsigned Val = (Name == "_M_kind") ? KindVal : 0;
+      QualType EnumTy = (Name == "_M_kind")
+                            ? Context.getTypeDeclType(
+                                  static_cast<const TypeDecl *>(
+                                      StdContractKindDecl))
+                            : Context.getTypeDeclType(
+                                  static_cast<const TypeDecl *>(
+                                      StdDetectionModeDecl));
+      Expr *IntVal = IntegerLiteral::Create(Context, llvm::APInt(8, Val),
+                                            Context.UnsignedCharTy,
+                                            ContractLoc);
+      Init = ImplicitCastExpr::Create(Context, EnumTy, CK_IntegralCast,
+                                      IntVal, nullptr, VK_PRValue,
+                                      FPOptionsOverride());
+    }
+    if (Init)
+      InitExprs.push_back(Init);
+  }
+
+  QualType ViolationType = Context.getTypeDeclType(
+      static_cast<const TypeDecl *>(StdContractViolationDecl));
+  VarDecl *VD = VarDecl::Create(
+      Context, EnclosingFD, ContractLoc, ContractLoc,
+      &Context.Idents.get("__contract_violation"), ViolationType,
+      Context.getTrivialTypeSourceInfo(ViolationType, ContractLoc), SC_None);
+  VD->setImplicit();
+
+  InitListExpr *ILE =
+      new (Context) InitListExpr(Context, ContractLoc, InitExprs, ContractLoc,
+                                false);
+  ILE->setType(ViolationType);
+  VD->setInit(ILE);
+
+  DeclStmt *DS =
+      new (Context) DeclStmt(DeclGroupRef(VD), ContractLoc, ContractLoc);
+
+  // ContextRAII: BuildCallExpr checks scoping; set CurContext to the
+  // enclosing function so the VarDecl reference resolves correctly.
+  Expr *Call;
+  {
+    ContextRAII SavedContext(*this, EnclosingFD);
+
+    DeclRefExpr *HandlerRef = BuildDeclRefExpr(
+        StdHandleContractViolationDecl,
+        StdHandleContractViolationDecl->getType(), VK_LValue, ContractLoc);
+
+    Expr *ViolationRef =
+        BuildDeclRefExpr(VD, ViolationType, VK_LValue, ContractLoc);
+
+    ExprResult CallResult =
+        BuildCallExpr(/*Scope=*/nullptr, HandlerRef, ContractLoc,
+                      MultiExprArg(&ViolationRef, 1), ContractLoc);
+    if (CallResult.isInvalid())
+      return nullptr;
+    Call = CallResult.get();
+  }
+
+  Stmt *Stmts[] = {DS, Call};
+  return CompoundStmt::Create(Context, Stmts, FPOptionsOverride(), ContractLoc,
+                              ContractLoc);
+}
+
+namespace {
+/// A TreeTransform that substitutes the type of a specific VarDecl.
+/// Used to rebuild post-condition predicates after lambda return type deduction.
+class LambdaReturnTypeSubstituter
+    : public TreeTransform<LambdaReturnTypeSubstituter> {
+  VarDecl *TargetVar;
+  QualType NewType;
+
+public:
+  LambdaReturnTypeSubstituter(Sema &S, VarDecl *TargetVar, QualType NewType)
+      : TreeTransform<LambdaReturnTypeSubstituter>(S), TargetVar(TargetVar),
+        NewType(NewType) {}
+
+  ExprResult TransformDeclRefExpr(DeclRefExpr *E) {
+    if (E->getDecl() == TargetVar) {
+      // Rebuild the DeclRefExpr with the new type.
+      QualType ExprTy = NewType;
+      if (E->getType().hasQualifiers())
+        ExprTy = SemaRef.Context.getQualifiedType(ExprTy,
+                                                   E->getType().getQualifiers());
+      return new (SemaRef.Context)
+          DeclRefExpr(SemaRef.Context, E->getDecl(),
+                      E->refersToEnclosingVariableOrCapture(), ExprTy,
+                      E->getValueKind(), E->getLocation(),
+                      E->getNameInfo().getInfo());
+    }
+    return TreeTransform<LambdaReturnTypeSubstituter>::TransformDeclRefExpr(E);
+  }
+};
+} // namespace
+
+void Sema::RebuildDeducedReturnTypePostConditions(FunctionDecl *FD) {
+  // Only process functions with post-conditions.
+  if (!FD || !FD->getPostConditions())
+    return;
+
+  // Get the deduced return type.
+  QualType RetType = FD->getReturnType();
+  if (RetType->isDependentType() || RetType->isUndeducedType())
+    return;
+
+  // Walk through post-conditions and rebuild those with DependentTy result vars.
+  for (auto *Post = FD->getPostConditions(); Post;
+       Post = Post->getNext()) {
+    if (Post->isInvalid() || !Post->getPredicate())
+      continue;
+    VarDecl *RV = Post->getResultVar();
+    if (!RV || !RV->getType()->isDependentType())
+      continue;
+
+    // Update the result variable's type to the deduced return type.
+    QualType NewRVType = RetType.getNonReferenceType().withConst();
+    RV->setType(NewRVType);
+
+    // Rebuild the predicate expression with the updated type.
+    if (Expr *Pred = Post->getPredicate()) {
+      LambdaReturnTypeSubstituter Substituter(*this, RV, NewRVType);
+      ExprResult NewPred = Substituter.TransformExpr(Pred);
+      if (NewPred.isInvalid())
+        continue;
+
+      // Convert to bool if needed.
+      if (!NewPred.get()->isTypeDependent()) {
+        ExprResult Converted = PerformContextuallyConvertToBool(NewPred.get());
+        if (Converted.isInvalid())
+          continue;
+        NewPred = Converted;
+      }
+
+      Post->setPredicate(NewPred.get());
+    }
+
+    // Build the handler body now that we have concrete types.
+    Post->setHandlerBody(
+        BuildContractHandlerBody(Post->getKeywordLoc(),
+                                 Post->getPredicate()->getSourceRange(),
+                                 /*KindVal=*/1, FD));
+  }
 }

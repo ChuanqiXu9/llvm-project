@@ -1,0 +1,73 @@
+// RUN: %clang_cc1 -std=c++2c -fcontracts -triple x86_64-linux-gnu -emit-llvm -o - %s | FileCheck %s
+
+namespace std::contracts {
+  enum class contract_kind : unsigned char { pre, post, assert_kind };
+  enum class detection_mode_t : unsigned char { predicate_false };
+  class contract_violation {
+    const char* _M_file;
+    const char* _M_function;
+    const char* _M_comment;
+    unsigned int _M_line;
+    contract_kind _M_kind;
+    detection_mode_t _M_detection_mode;
+  };
+  void handle_contract_violation(const contract_violation&);
+}
+
+void use(int);
+
+// --- Lambda with pre-condition ---
+
+void test_lambda_pre() {
+  auto lam = [](int x) pre(x > 0) { return x; };
+  use(lam(5));
+}
+
+// CHECK-LABEL: define {{.*}} @_Z15test_lambda_prev()
+// CHECK: define {{.*}} @"_ZZ15test_lambda_prevENK3$_0clEi"(
+// CHECK:   %[[CMP:.*]] = icmp sgt i32 %{{.*}}, 0
+// CHECK:   br i1 %[[CMP]], label %contract.cont, label %contract.handler
+// CHECK: contract.handler:
+// CHECK:   call void @_ZNSt9contracts25handle_contract_violationERKNS_18contract_violationE(
+// CHECK:   call void @abort()
+// CHECK-NEXT: unreachable
+// CHECK: contract.cont:
+
+// --- Lambda with explicit return type and post-condition ---
+
+void test_lambda_post() {
+  auto lam = [](int x) -> int post(r: r >= 0) { return x * x; };
+  use(lam(5));
+}
+
+// CHECK-LABEL: define {{.*}} @_Z16test_lambda_postv()
+// CHECK: define {{.*}} @"_ZZ16test_lambda_postvENK3$_0clEi"(
+// CHECK:   store i32 %mul, ptr %retval
+// CHECK:   %[[RET:.*]] = load i32, ptr %retval
+// CHECK:   %[[CMP:.*]] = icmp sge i32 %[[RET]], 0
+// CHECK:   br i1 %[[CMP]], label %contract.cont, label %contract.handler
+// CHECK: contract.handler:
+// CHECK:   call void @_ZNSt9contracts25handle_contract_violationERKNS_18contract_violationE(
+// CHECK:   call void @abort()
+// CHECK-NEXT: unreachable
+// CHECK: contract.cont:
+
+// --- Lambda with both pre and post ---
+
+void test_lambda_both() {
+  auto lam = [](int x) -> int pre(x > 0) post(r: r > 0) { return x * 2; };
+  use(lam(5));
+}
+
+// CHECK-LABEL: define {{.*}} @_Z16test_lambda_bothv()
+// CHECK: define {{.*}} @"_ZZ16test_lambda_bothvENK3$_0clEi"(
+// CHECK:   %[[CMP1:.*]] = icmp sgt i32 %{{.*}}, 0
+// CHECK:   br i1 %[[CMP1]], label %contract.cont, label %contract.handler
+// CHECK: contract.handler:
+// CHECK:   call void @_ZNSt9contracts25handle_contract_violationERKNS_18contract_violationE(
+// CHECK:   call void @abort()
+// CHECK: contract.cont:
+// CHECK:   store i32 %mul, ptr %retval
+// CHECK:   %[[RET:.*]] = load i32, ptr %retval
+// CHECK:   %[[CMP2:.*]] = icmp sgt i32 %[[RET]], 0
+// CHECK:   br i1 %[[CMP2]], label %contract.cont{{.*}}, label %contract.handler{{.*}}

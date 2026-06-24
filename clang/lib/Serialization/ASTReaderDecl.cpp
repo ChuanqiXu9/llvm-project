@@ -1149,11 +1149,14 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     PreContractAnnotation *PreHead = nullptr, *PreTail = nullptr;
     unsigned NumPre = Record.readInt();
     for (unsigned I = 0; I != NumPre; ++I) {
+      bool Invalid = Record.readInt();
       Expr *Pred = Record.readExpr();
       SourceLocation KwLoc = readSourceLocation();
       SourceLocation LP = readSourceLocation();
       SourceLocation RP = readSourceLocation();
       auto *Ann = new (C) PreContractAnnotation(Pred, KwLoc, LP, RP);
+      Ann->setInvalid(Invalid);
+      Ann->setHandlerBody(Record.readStmt());
       if (PreTail)
         PreTail->setNext(Ann);
       else
@@ -1165,12 +1168,15 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     PostContractAnnotation *PostHead = nullptr, *PostTail = nullptr;
     unsigned NumPost = Record.readInt();
     for (unsigned I = 0; I != NumPost; ++I) {
+      bool Invalid = Record.readInt();
       Expr *Pred = Record.readExpr();
       SourceLocation KwLoc = readSourceLocation();
       SourceLocation LP = readSourceLocation();
       SourceLocation RP = readSourceLocation();
       VarDecl *RV = readDeclAs<VarDecl>();
       auto *Ann = new (C) PostContractAnnotation(Pred, KwLoc, LP, RP, RV);
+      Ann->setInvalid(Invalid);
+      Ann->setHandlerBody(Record.readStmt());
       if (PostTail)
         PostTail->setNext(Ann);
       else

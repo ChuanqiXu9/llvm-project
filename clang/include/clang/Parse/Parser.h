@@ -1285,6 +1285,37 @@ private:
     std::unique_ptr<CachedTokens> Toks;
   };
 
+  /// LateParsedContractSpecifier - Contains cached tokens for a contract
+  /// specifier (pre/post) that cannot be parsed yet because it occurs within
+  /// a member function declaration inside the class, where 'this' and member
+  /// access are not yet available.
+  struct LateParsedContractSpecifier {
+    explicit LateParsedContractSpecifier(
+        bool IsPre, std::unique_ptr<CachedTokens> Toks,
+        IdentifierInfo *ResultName = nullptr,
+        SourceLocation KwLoc = SourceLocation(),
+        SourceLocation LParenLoc = SourceLocation(),
+        SourceLocation RParenLoc = SourceLocation(),
+        SourceLocation ResultNameLoc = SourceLocation())
+        : IsPre(IsPre), Toks(std::move(Toks)), ResultName(ResultName),
+          KwLoc(KwLoc), LParenLoc(LParenLoc), RParenLoc(RParenLoc),
+          ResultNameLoc(ResultNameLoc) {}
+
+    /// IsPre - Whether this is a pre-condition (true) or post-condition (false).
+    bool IsPre;
+
+    /// Toks - The sequence of tokens that comprises the predicate expression,
+    /// not including the opening or closing parentheses.
+    std::unique_ptr<CachedTokens> Toks;
+
+    /// ResultName - For post-conditions with result names, the identifier
+    /// for the result variable (e.g., 'r' in 'post(r: expr)').
+    IdentifierInfo *ResultName;
+
+    /// Source locations for the contract specifier.
+    SourceLocation KwLoc, LParenLoc, RParenLoc, ResultNameLoc;
+  };
+
   /// LateParsedMethodDeclaration - A method declaration inside a class that
   /// contains at least one entity whose parsing needs to be delayed
   /// until the class itself is completely-defined, such as a default
@@ -1306,6 +1337,11 @@ private:
     /// method will be stored so that they can be reintroduced into
     /// scope at the appropriate times.
     SmallVector<LateParsedDefaultArgument, 8> DefaultArgs;
+
+    /// ContractSpecifiers - Contains contract specifiers (pre/post) that
+    /// need to be parsed after the class is completely defined, because
+    /// they may reference 'this' or member variables.
+    SmallVector<LateParsedContractSpecifier, 4> ContractSpecifiers;
 
     /// The set of tokens that make up an exception-specification that
     /// has not yet been parsed.

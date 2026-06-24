@@ -1767,6 +1767,43 @@ def note_expr_evaluates_to : Note<
 // C++26 Contracts (P2900R14)
 def err_post_condition_result_name_void_return : Error<
   "post-condition result name on function returning void">;
+def err_contracts_on_non_first_declaration : Error<
+  "contracts may not be added on a function redeclaration">;
+def err_contracts_mismatch_redeclaration : Error<
+  "contracts on function redeclaration do not match the previous declaration">;
+def err_contracts_on_virtual_override : Error<
+  "contracts may not be specified on an overriding function">;
+def err_contracts_on_virtual : Error<
+  "contracts may not be specified on a virtual function at this time">;
+def err_contracts_on_ctor_dtor : Error<
+  "contracts may not be specified on a %select{constructor|destructor}0">;
+def err_contracts_on_deleted : Error<
+  "contracts may not be specified on a deleted function">;
+def err_contracts_on_defaulted : Error<
+  "contracts may not be specified on a defaulted function">;
+def err_contracts_on_function_pointer : Error<
+  "contracts may not be specified on a function pointer type">;
+def err_contracts_on_type_alias : Error<
+  "contracts may not be specified on a type alias">;
+def err_contract_postcondition_nonconst_param : Error<
+  "parameter %0 used in a postcondition predicate must be const-qualified">;
+def err_contract_predicate_modification : Error<
+  "contract predicate cannot modify %select{variable|'this'}0">;
+def err_contract_predicate_nonconst_call : Error<
+  "contract predicate cannot call non-const member function %0">;
+def err_contract_predicate_implicit_capture : Error<
+  "contract predicate cannot implicitly capture %0; explicitly capture it in the lambda">;
+def err_contract_violation_handler_not_found : Error<
+  "cannot use contract assertions: "
+  "%select{"
+  "namespace 'std::contracts' not found|"
+  "class 'std::contracts::contract_violation' not found|"
+  "class 'std::contracts::contract_violation' is incomplete|"
+  "enum 'std::contracts::contract_kind' not found|"
+  "enum 'std::contracts::detection_mode_t' not found|"
+  "class 'std::contracts::contract_violation' does not have the expected field layout|"
+  "function 'std::contracts::handle_contract_violation' not found"
+  "}0; include <contracts> to use contract assertions">;
 
 def subst_user_defined_msg : TextSubstitution<
   "%select{the message|the expression}0 in "
@@ -13600,6 +13637,17 @@ def err_std_source_location_impl_not_found : Error<
   "'std::source_location::__impl' was not found; it must be defined before '__builtin_source_location' is called">;
 def err_std_source_location_impl_malformed : Error<
   "'std::source_location::__impl' must be standard-layout and have only two 'const char *' fields '_M_file_name' and '_M_function_name', and two integral fields '_M_line' and '_M_column'">;
+
+def err_std_contract_violation_not_found : Error<
+  "'std::contracts::contract_violation' was not found; it must be defined "
+  "when contracts are evaluated">;
+def err_std_contract_violation_malformed : Error<
+  "'std::contracts::contract_violation' must be a standard-layout class with "
+  "fields '_M_file', '_M_function', '_M_comment' (const char *), "
+  "'_M_line' (unsigned int), '_M_kind' and '_M_detection_mode'">;
+def err_std_handle_contract_violation_not_found : Error<
+  "'std::contracts::handle_contract_violation' was not found; it must be "
+  "declared when contracts are evaluated">;
 
 def err_std_initializer_list_malformed : Error<
   "%0 layout not recognized. Must be a non-polymorphic class type with no bases and two fields: a 'const E *' and either another 'const E *' or a 'std::size_t'">;

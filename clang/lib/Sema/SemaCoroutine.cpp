@@ -179,6 +179,11 @@ static QualType lookupCoroutineHandleType(Sema &S, QualType PromiseType,
 
 static bool isValidCoroutineContext(Sema &S, SourceLocation Loc,
                                     StringRef Keyword) {
+  if (S.isParsingContractPredicate()) {
+    S.Diag(Loc, diag::err_contract_predicate_coroutine) << Keyword;
+    return false;
+  }
+
   // [expr.await]p2 dictates that 'co_await' and 'co_yield' must be used within
   // a function body.
   // FIXME: This also covers [expr.await]p2: "An await-expression shall not

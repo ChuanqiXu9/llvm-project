@@ -2376,7 +2376,16 @@ void Parser::HandleMemberFunctionDeclDelays(Declarator &DeclaratorInfo,
     }
   }
 
-  if (NeedLateParse) {
+  // Check if there are any contract specifiers with cached tokens
+  bool HasLateParsedContracts = false;
+  for (const auto &CS : DeclaratorInfo.getContractSpecifiers()) {
+    if (CS.PredicateTokens) {
+      HasLateParsedContracts = true;
+      break;
+    }
+  }
+
+  if (NeedLateParse || HasLateParsedContracts) {
     // Push this method onto the stack of late-parsed method
     // declarations.
     auto LateMethod = new LateParsedMethodDeclaration(this, ThisDecl);
@@ -2395,6 +2404,18 @@ void Parser::HandleMemberFunctionDeclDelays(Declarator &DeclaratorInfo,
     if (FTI.getExceptionSpecType() == EST_Unparsed) {
       LateMethod->ExceptionSpecTokens = FTI.ExceptionSpecTokens;
       FTI.ExceptionSpecTokens = nullptr;
+    }
+
+    // Stash contract specifiers with cached tokens in the late-parsed method.
+    for (auto &CS : DeclaratorInfo.getContractSpecifiers()) {
+      if (CS.PredicateTokens) {
+        LateMethod->ContractSpecifiers.emplace_back(
+            CS.CKind == Declarator::ContractSpecInfo::Pre,
+            std::move(const_cast<std::unique_ptr<CachedTokens> &>(
+                CS.PredicateTokens)),
+            CS.ResultName, CS.KwLoc, CS.LParenLoc, CS.RParenLoc,
+            CS.ResultNameLoc);
+      }
     }
   }
 }
@@ -4233,6 +4254,28 @@ void Parser::ParseContractSpecifiers(Declarator &D,
   if (!NextToken().is(tok::l_paren))
     return;
 
+  // P2900R14: Contracts may not be specified on function pointer types or
+  // type aliases. Check the declarator context and structure.
+  if (D.getContext() == DeclaratorContext::AliasDecl ||
+      D.getContext() == DeclaratorContext::AliasTemplate) {
+    Diag(Tok.getLocation(), diag::err_contracts_on_type_alias);
+    return;
+  }
+
+  // Check if the declarator already has pointer, reference, or array types.
+  // If so, this is a function pointer or similar, not a function declaration.
+  for (unsigned I = 0, N = D.getNumTypeObjects(); I != N; ++I) {
+    const DeclaratorChunk &Chunk = D.getTypeObject(I);
+    if (Chunk.Kind == DeclaratorChunk::Pointer ||
+        Chunk.Kind == DeclaratorChunk::Reference ||
+        Chunk.Kind == DeclaratorChunk::Array ||
+        Chunk.Kind == DeclaratorChunk::BlockPointer ||
+        Chunk.Kind == DeclaratorChunk::MemberPointer) {
+      Diag(Tok.getLocation(), diag::err_contracts_on_function_pointer);
+      return;
+    }
+  }
+
   // Parse a sequence of contract specifiers.
   while (Tok.is(tok::identifier)) {
     II = Tok.getIdentifierInfo();
@@ -4266,14 +4309,64 @@ void Parser::ParseContractSpecifiers(Declarator &D,
           getCurScope(), D, ResultName, ResultNameLoc, TrailingReturnType);
     }
 
-    ExprResult Predicate = ParseConditionalExpression();
+    // Check if we're in a member function declarator where 'this' might not
+    // be available yet. If so, cache the tokens for delayed parsing.
+    // We cache tokens when the declarator context is Member (member function
+    // declaration), but NOT when:
+    // - the function is virtual (virtual functions are rejected entirely)
+    // - the function is static (static member functions don't have 'this')
+    bool ShouldCacheTokens =
+        D.getContext() == DeclaratorContext::Member &&
+        !D.getDeclSpec().isVirtualSpecified() &&
+        D.getDeclSpec().getStorageClassSpec() != DeclSpec::SCS_static;
+
+    ExprResult Predicate;
+    std::unique_ptr<CachedTokens> PredicateTokens;
+
+    if (ShouldCacheTokens) {
+      // Cache tokens for delayed parsing in member functions.
+      // We need to cache tokens while tracking nested parentheses, brackets,
+      // and braces, stopping at the matching closing parenthesis.
+      PredicateTokens = std::make_unique<CachedTokens>();
+
+      unsigned ParenDepth = 0;
+      while (true) {
+        if (Tok.is(tok::eof))
+          break;
+
+        // Track nested structures
+        if (Tok.is(tok::l_paren)) {
+          ++ParenDepth;
+        } else if (Tok.is(tok::r_paren)) {
+          if (ParenDepth == 0)
+            break; // Found the matching closing paren
+          --ParenDepth;
+        }
+
+        PredicateTokens->push_back(Tok);
+        ConsumeAnyToken();
+      }
+
+      // Check for empty predicate
+      if (PredicateTokens->empty()) {
+        Diag(Tok.getLocation(), diag::err_expected_expression);
+        ResultNameScope.reset();
+        T.consumeClose();
+        continue;
+      }
+    } else {
+      // Parse immediately for non-member functions or virtual functions
+      Predicate = ParseConditionalExpression();
+    }
 
     // Close the result name scope before consuming ')' so that the
     // result name is not visible outside this contract specifier.
     ResultNameScope.reset();
     T.consumeClose();
 
-    if (Predicate.isInvalid())
+    // If we parsed immediately and got an invalid predicate, skip this
+    // specifier
+    if (!ShouldCacheTokens && Predicate.isInvalid())
       continue;
 
     // Store the parsed contract specifier in the Declarator.
@@ -4281,6 +4374,7 @@ void Parser::ParseContractSpecifiers(Declarator &D,
     Info.CKind = IsPre ? Declarator::ContractSpecInfo::Pre
                        : Declarator::ContractSpecInfo::Post;
     Info.Predicate = Predicate.get();
+    Info.PredicateTokens = std::move(PredicateTokens);
     Info.ResultName = ResultName;
     Info.ResultVar = ResultVar;
     Info.KwLoc = KwLoc;

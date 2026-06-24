@@ -571,9 +571,14 @@ public:
       Visit(D->getBody());
 
     // C++26 Contracts: dump pre/post-condition annotations.
-    for (auto *C = D->getPreConditions(); C; C = C->getNext())
+    for (auto *C = D->getPreConditions(); C; C = C->getNext()) {
+      if (C->isInvalid() || !C->getPredicate())
+        continue;
       getNodeDelegate().AddChild("pre", [=] { Visit(C->getPredicate()); });
+    }
     for (auto *C = D->getPostConditions(); C; C = C->getNext()) {
+      if (C->isInvalid() || !C->getPredicate())
+        continue;
       getNodeDelegate().AddChild("post", [=] {
         if (auto *RV = C->getResultVar())
           Visit(RV);

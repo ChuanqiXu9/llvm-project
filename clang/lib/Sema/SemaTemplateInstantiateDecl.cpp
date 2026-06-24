@@ -3106,6 +3106,85 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(
       PrincipalDecl->isInIdentifierNamespace(Decl::IDNS_Ordinary))
     PrincipalDecl->setNonMemberOperator();
 
+  // C++26 Contracts: instantiate contract predicates.
+  // Use PotentiallyEvaluated context since predicates are evaluated at runtime.
+  if (D->hasContracts()) {
+    // Create a local instantiation scope for parameter substitution.
+    LocalInstantiationScope Scope(SemaRef);
+
+    // Enter the function context for substitution.
+    Sema::ContextRAII savedContext(SemaRef, Function);
+
+    // Map old parameters to new parameters for substitution.
+    for (unsigned I = 0, E = D->getNumParams(); I < E; ++I) {
+      ParmVarDecl *OldParam = D->getParamDecl(I);
+      ParmVarDecl *NewParam = Function->getParamDecl(I);
+      Scope.InstantiatedLocal(OldParam, NewParam);
+    }
+
+    EnterExpressionEvaluationContext Evaluated(
+        SemaRef, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+    PreContractAnnotation *PreHead = nullptr, *PreTail = nullptr;
+    for (auto *Pre = D->getPreConditions(); Pre; Pre = Pre->getNext()) {
+      if (Pre->isInvalid() || !Pre->getPredicate())
+        continue;
+      ExprResult Pred = SemaRef.SubstExpr(Pre->getPredicate(), TemplateArgs);
+      if (Pred.isInvalid())
+        continue;
+      if (!Pred.get()->isTypeDependent()) {
+        Pred = SemaRef.PerformContextuallyConvertToBool(Pred.get());
+        if (Pred.isInvalid())
+          continue;
+      }
+      auto *Ann = new (SemaRef.Context) PreContractAnnotation(
+          Pred.get(), Pre->getKeywordLoc(), Pre->getLParenLoc(),
+          Pre->getRParenLoc());
+      if (PreTail)
+        PreTail->setNext(Ann);
+      else
+        PreHead = Ann;
+      PreTail = Ann;
+    }
+    Function->setPreConditions(PreHead);
+
+    PostContractAnnotation *PostHead = nullptr, *PostTail = nullptr;
+    for (auto *Post = D->getPostConditions(); Post; Post = Post->getNext()) {
+      if (Post->isInvalid() || !Post->getPredicate())
+        continue;
+      VarDecl *NewRV = nullptr;
+      if (VarDecl *OldRV = Post->getResultVar()) {
+        QualType RetTy = Function->getReturnType().getNonReferenceType();
+        RetTy.addConst();
+        NewRV = VarDecl::Create(SemaRef.Context, Function,
+                                OldRV->getLocation(), OldRV->getLocation(),
+                                OldRV->getIdentifier(), RetTy,
+                                SemaRef.Context.getTrivialTypeSourceInfo(RetTy),
+                                SC_None);
+        NewRV->setImplicit();
+        NewRV->setReferenced();
+        NewRV->markUsed(SemaRef.Context);
+        SemaRef.CurrentInstantiationScope->InstantiatedLocal(OldRV, NewRV);
+      }
+      ExprResult Pred = SemaRef.SubstExpr(Post->getPredicate(), TemplateArgs);
+      if (Pred.isInvalid())
+        continue;
+      if (!Pred.get()->isTypeDependent()) {
+        Pred = SemaRef.PerformContextuallyConvertToBool(Pred.get());
+        if (Pred.isInvalid())
+          continue;
+      }
+      auto *Ann = new (SemaRef.Context) PostContractAnnotation(
+          Pred.get(), Post->getKeywordLoc(), Post->getLParenLoc(),
+          Post->getRParenLoc(), NewRV);
+      if (PostTail)
+        PostTail->setNext(Ann);
+      else
+        PostHead = Ann;
+      PostTail = Ann;
+    }
+    Function->setPostConditions(PostHead);
+  }
+
   return Function;
 }
 
@@ -3524,6 +3603,85 @@ Decl *TemplateDeclInstantiator::VisitCXXMethodDecl(
         Loc = Spec->getPointOfInstantiation();
       SemaRef.MarkFunctionReferenced(Loc, Method);
     }
+  }
+
+  // C++26 Contracts: instantiate contract predicates.
+  // Use PotentiallyEvaluated context since predicates are evaluated at runtime.
+  if (D->hasContracts()) {
+    // Create a local instantiation scope for parameter substitution.
+    LocalInstantiationScope Scope(SemaRef);
+
+    // Enter the function context for substitution.
+    Sema::ContextRAII savedContext(SemaRef, Method);
+
+    // Map old parameters to new parameters for substitution.
+    for (unsigned I = 0, E = D->getNumParams(); I < E; ++I) {
+      ParmVarDecl *OldParam = D->getParamDecl(I);
+      ParmVarDecl *NewParam = Method->getParamDecl(I);
+      Scope.InstantiatedLocal(OldParam, NewParam);
+    }
+
+    EnterExpressionEvaluationContext Evaluated(
+        SemaRef, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+    PreContractAnnotation *PreHead = nullptr, *PreTail = nullptr;
+    for (auto *Pre = D->getPreConditions(); Pre; Pre = Pre->getNext()) {
+      if (Pre->isInvalid() || !Pre->getPredicate())
+        continue;
+      ExprResult Pred = SemaRef.SubstExpr(Pre->getPredicate(), TemplateArgs);
+      if (Pred.isInvalid())
+        continue;
+      if (!Pred.get()->isTypeDependent()) {
+        Pred = SemaRef.PerformContextuallyConvertToBool(Pred.get());
+        if (Pred.isInvalid())
+          continue;
+      }
+      auto *Ann = new (SemaRef.Context) PreContractAnnotation(
+          Pred.get(), Pre->getKeywordLoc(), Pre->getLParenLoc(),
+          Pre->getRParenLoc());
+      if (PreTail)
+        PreTail->setNext(Ann);
+      else
+        PreHead = Ann;
+      PreTail = Ann;
+    }
+    Method->setPreConditions(PreHead);
+
+    PostContractAnnotation *PostHead = nullptr, *PostTail = nullptr;
+    for (auto *Post = D->getPostConditions(); Post; Post = Post->getNext()) {
+      if (Post->isInvalid() || !Post->getPredicate())
+        continue;
+      VarDecl *NewRV = nullptr;
+      if (VarDecl *OldRV = Post->getResultVar()) {
+        QualType RetTy = Method->getReturnType().getNonReferenceType();
+        RetTy.addConst();
+        NewRV = VarDecl::Create(SemaRef.Context, Method,
+                                OldRV->getLocation(), OldRV->getLocation(),
+                                OldRV->getIdentifier(), RetTy,
+                                SemaRef.Context.getTrivialTypeSourceInfo(RetTy),
+                                SC_None);
+        NewRV->setImplicit();
+        NewRV->setReferenced();
+        NewRV->markUsed(SemaRef.Context);
+        SemaRef.CurrentInstantiationScope->InstantiatedLocal(OldRV, NewRV);
+      }
+      ExprResult Pred = SemaRef.SubstExpr(Post->getPredicate(), TemplateArgs);
+      if (Pred.isInvalid())
+        continue;
+      if (!Pred.get()->isTypeDependent()) {
+        Pred = SemaRef.PerformContextuallyConvertToBool(Pred.get());
+        if (Pred.isInvalid())
+          continue;
+      }
+      auto *Ann = new (SemaRef.Context) PostContractAnnotation(
+          Pred.get(), Post->getKeywordLoc(), Post->getLParenLoc(),
+          Post->getRParenLoc(), NewRV);
+      if (PostTail)
+        PostTail->setNext(Ann);
+      else
+        PostHead = Ann;
+      PostTail = Ann;
+    }
+    Method->setPostConditions(PostHead);
   }
 
   return Method;
@@ -5946,6 +6104,28 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
                                          TemplateArgs))
       return;
+
+    // C++26 Contracts: Build handler bodies now that parameters are in scope.
+    if (Function->hasContracts()) {
+      for (auto *Pre = Function->getPreConditions(); Pre; Pre = Pre->getNext()) {
+        if (Pre->isInvalid() || !Pre->getPredicate())
+          continue;
+        if (!Pre->getHandlerBody()) {
+          Pre->setHandlerBody(BuildContractHandlerBody(
+              Pre->getKeywordLoc(), Pre->getPredicate()->getSourceRange(),
+              /*KindVal=*/0, Function));
+        }
+      }
+      for (auto *Post = Function->getPostConditions(); Post; Post = Post->getNext()) {
+        if (Post->isInvalid() || !Post->getPredicate())
+          continue;
+        if (!Post->getHandlerBody()) {
+          Post->setHandlerBody(BuildContractHandlerBody(
+              Post->getKeywordLoc(), Post->getPredicate()->getSourceRange(),
+              /*KindVal=*/1, Function));
+        }
+      }
+    }
 
     StmtResult Body;
     if (PatternDecl->hasSkippedBody()) {

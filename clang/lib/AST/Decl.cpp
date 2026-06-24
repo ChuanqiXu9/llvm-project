@@ -3140,6 +3140,96 @@ void FunctionDecl::setDefaultedOrDeletedInfo(
   DefaultedOrDeletedInfo = Info;
 }
 
+void FunctionDecl::ProfileContracts(llvm::FoldingSetNodeID &ID) const {
+  // We use ODRHash (ProcessODRHash) instead of Stmt::Profile because
+  // predicates in different declarations reference distinct VarDecl objects
+  // for the same parameter or post-condition result name. Stmt::Profile
+  // compares VarDecls by pointer identity, causing structurally identical
+  // contracts to appear different across redeclarations. ODRHash compares
+  // declarations by name, which correctly treats corresponding parameters
+  // and result variables as equivalent.
+  class ODRHash Hash;
+  unsigned PreCount = 0, PostCount = 0;
+  for (auto *C = PreConditions; C; C = C->getNext()) {
+    if (C->isInvalid() || !C->getPredicate())
+      continue;
+    Hash.AddStmt(C->getPredicate());
+    ++PreCount;
+  }
+  for (auto *C = PostConditions; C; C = C->getNext()) {
+    if (C->isInvalid() || !C->getPredicate())
+      continue;
+    Hash.AddStmt(C->getPredicate());
+    ++PostCount;
+  }
+  ID.AddInteger(PreCount);
+  ID.AddInteger(PostCount);
+  ID.AddInteger(Hash.CalculateHash());
+}
+
+bool FunctionDecl::hasContracts() const {
+  // Check this declaration's own contracts.
+  if (PreConditions || PostConditions)
+    return true;
+
+  // Check redeclaration chain (contracts on the first declaration).
+  if (const auto *First = getCanonicalDecl())
+    if (First->PreConditions || First->PostConditions)
+      return true;
+
+  // Check override chain (contracts inherited from overridden methods).
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(this)) {
+    for (const auto *Overridden : MD->overridden_methods()) {
+      if (Overridden->hasContracts())
+        return true;
+    }
+  }
+
+  return false;
+}
+
+PreContractAnnotation *FunctionDecl::getPreConditions() const {
+  // Check this declaration's own contracts.
+  if (PreConditions)
+    return PreConditions;
+
+  // Check redeclaration chain.
+  if (const auto *First = getCanonicalDecl())
+    if (First->PreConditions)
+      return First->PreConditions;
+
+  // Check override chain (contracts inherited from overridden methods).
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(this)) {
+    for (const auto *Overridden : MD->overridden_methods()) {
+      if (auto *Pre = Overridden->getPreConditions())
+        return Pre;
+    }
+  }
+
+  return nullptr;
+}
+
+PostContractAnnotation *FunctionDecl::getPostConditions() const {
+  // Check this declaration's own contracts.
+  if (PostConditions)
+    return PostConditions;
+
+  // Check redeclaration chain.
+  if (const auto *First = getCanonicalDecl())
+    if (First->PostConditions)
+      return First->PostConditions;
+
+  // Check override chain (contracts inherited from overridden methods).
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(this)) {
+    for (const auto *Overridden : MD->overridden_methods()) {
+      if (auto *Post = Overridden->getPostConditions())
+        return Post;
+    }
+  }
+
+  return nullptr;
+}
+
 void FunctionDecl::setDeletedAsWritten(bool D, StringLiteral *Message) {
   FunctionDeclBits.IsDeleted = D;
 

@@ -4169,6 +4169,7 @@ public:
 /// \endcode
 class ContractAssertStmt : public Stmt {
   Expr *Condition;
+  Stmt *HandlerBody = nullptr;
   SourceLocation ContractAssertLoc;
   SourceLocation LParenLoc, RParenLoc;
 
@@ -4184,10 +4185,16 @@ public:
 
   Expr *getCondition() const { return Condition; }
   void setCondition(Expr *E) { Condition = E; }
+  /// \see ContractAnnotationBase<false>::getHandlerBody
+  Stmt *getHandlerBody() const { return HandlerBody; }
+  void setHandlerBody(Stmt *S) { HandlerBody = S; }
 
   SourceLocation getContractAssertLoc() const { return ContractAssertLoc; }
+  void setContractAssertLoc(SourceLocation Loc) { ContractAssertLoc = Loc; }
   SourceLocation getLParenLoc() const { return LParenLoc; }
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
   SourceLocation getRParenLoc() const { return RParenLoc; }
+  void setRParenLoc(SourceLocation Loc) { RParenLoc = Loc; }
 
   SourceLocation getBeginLoc() const { return ContractAssertLoc; }
   SourceLocation getEndLoc() const { return RParenLoc; }

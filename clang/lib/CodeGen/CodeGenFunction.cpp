@@ -421,6 +421,10 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
   // Emit function epilog (to return).
   llvm::DebugLoc Loc = EmitReturnBlock();
 
+  if (const auto *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl))
+    if (FD->getPostConditions())
+      EmitPostConditions();
+
   if (ShouldInstrumentFunction()) {
     if (CGM.getCodeGenOpts().InstrumentFunctions)
       CurFn->addFnAttr("instrument-function-exit", "__cyg_profile_func_exit");
@@ -1564,6 +1568,9 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // trivial empty loop.
   if (checkIfFunctionMustProgress())
     CurFn->addFnAttr(llvm::Attribute::MustProgress);
+
+  if (FD->getPreConditions())
+    EmitPreConditions();
 
   // Generate the body of the function.
   PGO->assignRegionCounters(GD, CurFn);
@@ -3556,5 +3563,135 @@ void CodeGenFunction::emitPFPPostCopyUpdates(Address DestPtr, Address SrcPtr,
     auto DestFieldPtr = EmitAddressOfPFPField(DestPtr, Field);
     auto SrcFieldPtr = EmitAddressOfPFPField(SrcPtr, Field);
     Builder.CreateStore(Builder.CreateLoad(SrcFieldPtr), DestFieldPtr);
+  }
+}
+
+/// Emit a contract check per [basic.contract.eval] (P2900R14).
+void CodeGenFunction::EmitContractCheck(Expr *Predicate, Stmt *HandlerBody) {
+  auto Mode = getLangOpts().getContractViolationMode();
+  // "If the semantic [...] is ignore, the predicate [...] is not evaluated"
+  // ([basic.contract.eval] p3).
+  if (Mode == LangOptions::ContractViolationModeKind::Ignore)
+    return;
+
+  llvm::Value *Cond = EvaluateExprAsBool(Predicate);
+  llvm::BasicBlock *ContBB = createBasicBlock("contract.cont");
+  llvm::BasicBlock *HandlerBB = createBasicBlock("contract.handler");
+  Builder.CreateCondBr(Cond, ContBB, HandlerBB);
+  EmitBlock(HandlerBB);
+
+  assert(HandlerBody && "HandlerBody must be built by Sema");
+  EmitStmt(HandlerBody);
+
+  if (Mode == LangOptions::ContractViolationModeKind::Enforce) {
+    // "the program is terminated" ([basic.contract.eval] p5).
+    llvm::FunctionType *FTy = llvm::FunctionType::get(VoidTy, false);
+    llvm::FunctionCallee AbortFn = CGM.CreateRuntimeFunction(FTy, "abort");
+    llvm::CallInst *Call = EmitRuntimeCall(AbortFn);
+    Call->setDoesNotReturn();
+    Builder.CreateUnreachable();
+  } else {
+    assert(Mode == LangOptions::ContractViolationModeKind::Observe &&
+           "Unknown contract violation mode");
+    // "execution continues normally" ([basic.contract.eval] p5).
+    Builder.CreateBr(ContBB);
+  }
+
+  EmitBlock(ContBB);
+}
+
+void CodeGenFunction::EmitPreConditions() {
+  const auto *FD = cast<FunctionDecl>(CurCodeDecl);
+
+  // When contracts are inherited from a prior declaration or an overridden
+  // method, the predicate DeclRefExprs reference that declaration's
+  // ParmVarDecls. Map them to the definition's parameter addresses so
+  // CodeGen can resolve them.
+  const auto *CanonFD = FD->getCanonicalDecl();
+  if (CanonFD != FD) {
+    auto CanonParam = CanonFD->param_begin();
+    for (const auto *Param : FD->parameters()) {
+      setAddrOfLocalVar(*CanonParam, GetAddrOfLocalVar(Param));
+      ++CanonParam;
+    }
+  }
+
+  // Handle override inheritance: if contracts come from an overridden method,
+  // map its parameters to the current method's parameters. We need to walk
+  // the entire override chain and map all parameters, because the contract
+  // might be inherited from a distant ancestor.
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+    llvm::SmallVector<const CXXMethodDecl*, 4> WorkList;
+    WorkList.push_back(MD);
+
+    while (!WorkList.empty()) {
+      const CXXMethodDecl *Current = WorkList.pop_back_val();
+      for (const auto *Overridden : Current->overridden_methods()) {
+        // Map parameters from Overridden to FD
+        auto OverriddenParam = Overridden->param_begin();
+        for (const auto *Param : FD->parameters()) {
+          if (!LocalDeclMap.count(*OverriddenParam))
+            setAddrOfLocalVar(*OverriddenParam, GetAddrOfLocalVar(Param));
+          ++OverriddenParam;
+        }
+        // Continue walking up the override chain
+        WorkList.push_back(Overridden);
+      }
+    }
+  }
+
+  for (auto *Pre = FD->getPreConditions(); Pre; Pre = Pre->getNext()) {
+    if (Pre->isInvalid() || !Pre->getPredicate())
+      continue;
+    EmitContractCheck(Pre->getPredicate(), Pre->getHandlerBody());
+  }
+}
+
+void CodeGenFunction::EmitPostConditions() {
+  const auto *FD = cast<FunctionDecl>(CurCodeDecl);
+
+  // Same parameter mapping as EmitPreConditions. The LocalDeclMap check avoids
+  // duplicate entries when both pre- and post-conditions are inherited.
+  const auto *CanonFD = FD->getCanonicalDecl();
+  if (CanonFD != FD) {
+    auto CanonParam = CanonFD->param_begin();
+    for (const auto *Param : FD->parameters()) {
+      if (!LocalDeclMap.count(*CanonParam))
+        setAddrOfLocalVar(*CanonParam, GetAddrOfLocalVar(Param));
+      ++CanonParam;
+    }
+  }
+
+  // Handle override inheritance: if contracts come from an overridden method,
+  // map its parameters to the current method's parameters. We need to walk
+  // the entire override chain and map all parameters, because the contract
+  // might be inherited from a distant ancestor.
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+    llvm::SmallVector<const CXXMethodDecl*, 4> WorkList;
+    WorkList.push_back(MD);
+
+    while (!WorkList.empty()) {
+      const CXXMethodDecl *Current = WorkList.pop_back_val();
+      for (const auto *Overridden : Current->overridden_methods()) {
+        // Map parameters from Overridden to FD
+        auto OverriddenParam = Overridden->param_begin();
+        for (const auto *Param : FD->parameters()) {
+          if (!LocalDeclMap.count(*OverriddenParam))
+            setAddrOfLocalVar(*OverriddenParam, GetAddrOfLocalVar(Param));
+          ++OverriddenParam;
+        }
+        // Continue walking up the override chain
+        WorkList.push_back(Overridden);
+      }
+    }
+  }
+
+  for (auto *Post = FD->getPostConditions(); Post; Post = Post->getNext()) {
+    if (Post->isInvalid() || !Post->getPredicate())
+      continue;
+    if (VarDecl *RV = Post->getResultVar())
+      setAddrOfLocalVar(RV, ReturnValue);
+
+    EmitContractCheck(Post->getPredicate(), Post->getHandlerBody());
   }
 }

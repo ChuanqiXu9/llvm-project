@@ -6067,6 +6067,20 @@ public:
   /// to the FunctionDecl.
   void ActOnFunctionContractSpecifiers(FunctionDecl *FD, const Declarator &D);
 
+  /// Handle a late-parsed contract specifier (pre/post) for a member function.
+  /// This is called after the class is completely defined, when 'this' and
+  /// member variables are available.
+  void ActOnLateParsedContractSpecifier(FunctionDecl *FD, bool IsPre,
+                                        Expr *Predicate, VarDecl *ResultVar,
+                                        SourceLocation KwLoc,
+                                        SourceLocation LParenLoc,
+                                        SourceLocation RParenLoc,
+                                        SourceLocation ResultNameLoc);
+
+  /// Finish processing late-parsed contract specifiers for a member function.
+  /// Performs checks that require all delayed predicates to be available.
+  void ActOnFinishLateParsedContractSpecifiers(FunctionDecl *FD);
+
   /// Create an implicit VarDecl for the result name in post(name: expr) and
   /// push it into the current scope so the predicate expression can reference it.
   VarDecl *ActOnPostConditionResultName(Scope *S, Declarator &D,
@@ -6078,6 +6092,55 @@ public:
   StmtResult ActOnContractAssert(SourceLocation ContractAssertLoc,
                                  Expr *Predicate, SourceLocation LParenLoc,
                                  SourceLocation RParenLoc);
+
+  /// Look up std::contracts::contract_violation ([support.contract.cviol])
+  /// and std::contracts::handle_contract_violation ([support.contract.handle]).
+  /// Results are cached in StdContractViolationDecl /
+  /// StdHandleContractViolationDecl following the StdCoroutineTraitsCache
+  /// pattern. Returns true if both were found.
+  enum class ContractViolationLookupFailure {
+    None,
+    MissingNamespace,
+    MissingContractViolation,
+    IncompleteContractViolation,
+    MissingContractKind,
+    MissingDetectionMode,
+    MalformedContractViolation,
+    MissingHandlerFunction,
+  };
+  ContractViolationLookupFailure LookupContractViolationHandler(SourceLocation Loc);
+
+  /// Build the handler body invoked when a contract is violated.
+  ///
+  /// "[basic.contract.eval] p5: The contract-violation handler is the function
+  ///  std::contracts::handle_contract_violation ([support.contract.handle])."
+  ///
+  /// \param PredicateRange source range of the predicate expression, used to
+  ///   extract the text for contract_violation::comment() ([support.contract.cviol]).
+  /// \param KindVal maps to contract_kind ([support.contract.cviol]):
+  ///   0 = pre, 1 = post, 2 = assert.
+  Stmt *BuildContractHandlerBody(SourceLocation ContractLoc,
+                                 SourceRange PredicateRange, unsigned KindVal,
+                                 FunctionDecl *EnclosingFD);
+
+  /// For functions with deduced return types (including lambdas), after the
+  /// return type is deduced, rebuild post-conditions that have result
+  /// variables with DependentTy. Updates the result variable type, rebuilds
+  /// the predicate expression, and builds the handler body.
+  void RebuildDeducedReturnTypePostConditions(FunctionDecl *FD);
+
+  /// Cached std::contracts::contract_violation ([support.contract.cviol]).
+  CXXRecordDecl *StdContractViolationDecl = nullptr;
+  /// Cached std::contracts::handle_contract_violation ([support.contract.handle]).
+  FunctionDecl *StdHandleContractViolationDecl = nullptr;
+  /// Cached std::contracts::contract_kind ([support.contract.cviol]).
+  EnumDecl *StdContractKindDecl = nullptr;
+  /// Cached std::contracts::detection_mode_t ([support.contract.cviol]).
+  EnumDecl *StdDetectionModeDecl = nullptr;
+  bool ContractViolationLookupDone = false;
+  ContractViolationLookupFailure ContractViolationLookupResult =
+      ContractViolationLookupFailure::None;
+  bool ContractViolationHandlerDiagEmitted = false;
   /// @}
 
   Decl *ActOnStaticAssertDeclaration(SourceLocation StaticAssertLoc,

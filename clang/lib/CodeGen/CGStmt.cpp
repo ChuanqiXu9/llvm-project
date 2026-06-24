@@ -160,7 +160,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S, ArrayRef<const Attr *> Attrs) {
   case Stmt::ForStmtClass:     EmitForStmt(cast<ForStmt>(*S), Attrs);     break;
 
   case Stmt::ReturnStmtClass:  EmitReturnStmt(cast<ReturnStmt>(*S));      break;
-  case Stmt::ContractAssertStmtClass: break; // TODO: implement in CodeGen
+  case Stmt::ContractAssertStmtClass:
+    EmitContractAssertStmt(cast<ContractAssertStmt>(*S));
+    break;
 
   case Stmt::SwitchStmtClass:  EmitSwitchStmt(cast<SwitchStmt>(*S));      break;
   case Stmt::GCCAsmStmtClass:  // Intentional fall-through.
@@ -3527,4 +3529,8 @@ CodeGenFunction::getOrEmitConvergenceEntryToken(llvm::Function *F) {
   // convergent.
   F->setConvergent();
   return llvm::ConvergenceControlInst::CreateEntry(*BB);
+}
+
+void CodeGenFunction::EmitContractAssertStmt(const ContractAssertStmt &S) {
+  EmitContractCheck(S.getCondition(), S.getHandlerBody());
 }

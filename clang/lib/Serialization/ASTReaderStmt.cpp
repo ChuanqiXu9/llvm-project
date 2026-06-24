@@ -341,7 +341,11 @@ void ASTStmtReader::VisitBreakStmt(BreakStmt *S) { VisitLoopControlStmt(S); }
 
 void ASTStmtReader::VisitContractAssertStmt(ContractAssertStmt *S) {
   VisitStmt(S);
+  S->setContractAssertLoc(Record.readSourceLocation());
+  S->setLParenLoc(Record.readSourceLocation());
+  S->setRParenLoc(Record.readSourceLocation());
   S->setCondition(Record.readSubExpr());
+  S->setHandlerBody(Record.readSubStmt());
 }
 
 void ASTStmtReader::VisitDeferStmt(DeferStmt *S) {

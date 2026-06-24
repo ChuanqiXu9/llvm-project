@@ -1347,6 +1347,15 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
       Tok.isRegularKeywordAttribute() ||
       (Tok.is(tok::l_square) && NextToken().is(tok::l_square));
 
+  // Check for C++26 contract specifiers (pre/post)
+  if (getLangOpts().Contracts && Tok.is(tok::identifier)) {
+    IdentifierInfo *II = Tok.getIdentifierInfo();
+    if (II->isStr("pre") || II->isStr("post")) {
+      if (NextToken().is(tok::l_paren))
+        HasSpecifiers = true;
+    }
+  }
+
   if (HasSpecifiers && !HasParentheses && !getLangOpts().CPlusPlus23) {
     // It's common to forget that one needs '()' before 'mutable', an
     // attribute specifier, the result type, or the requires clause. Deal with
@@ -1440,6 +1449,11 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                       /*DeclsInPrototype=*/{}, LParenLoc, FunLocalRangeEnd, D,
                       TrailingReturnType, TrailingReturnTypeLoc, &DS),
                   std::move(Attributes), DeclEndLoc);
+
+    // Parse C++26 contract specifiers (pre/post) for lambda expressions.
+    ParseContractSpecifiers(D, TrailingReturnType.isUsable()
+                                 ? TrailingReturnType.get()
+                                 : ParsedType());
 
     if (HasParentheses && Tok.is(tok::kw_requires))
       ParseTrailingRequiresClause(D);

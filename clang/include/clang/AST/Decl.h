@@ -53,6 +53,10 @@
 #include <string>
 #include <utility>
 
+namespace llvm {
+class FoldingSetNodeID;
+}
+
 namespace clang {
 
 class ASTContext;
@@ -2019,6 +2023,7 @@ class ContractAnnotationBase {
   ContractAnnotationBase *Next = nullptr;
   SourceLocation KwLoc;
   SourceLocation LParenLoc, RParenLoc;
+  bool Invalid = false;
 
 public:
   ContractAnnotationBase(Expr *Pred, SourceLocation KwLoc,
@@ -2027,11 +2032,20 @@ public:
 
   Expr *getPredicate() const { return Predicate; }
   void setPredicate(Expr *P) { Predicate = P; }
+  bool isInvalid() const { return Invalid; }
+  void setInvalid(bool I = true) { Invalid = I; }
   ContractAnnotationBase *getNext() const { return Next; }
   void setNext(ContractAnnotationBase *N) { Next = N; }
+  /// The compiler-generated handler body that constructs a contract_violation
+  /// and calls handle_contract_violation ([basic.contract.eval] p5).
+  Stmt *getHandlerBody() const { return HandlerBody; }
+  void setHandlerBody(Stmt *S) { HandlerBody = S; }
   SourceLocation getKeywordLoc() const { return KwLoc; }
   SourceLocation getLParenLoc() const { return LParenLoc; }
   SourceLocation getRParenLoc() const { return RParenLoc; }
+
+private:
+  Stmt *HandlerBody = nullptr;
 };
 
 /// Specialization for post-conditions, which additionally store an optional
@@ -2048,6 +2062,7 @@ class ContractAnnotationBase<true> {
   ContractAnnotationBase *Next = nullptr;
   SourceLocation KwLoc;
   SourceLocation LParenLoc, RParenLoc;
+  bool Invalid = false;
   /// The implicit VarDecl for the return value name in post(name: expr).
   /// nullptr when no result name is specified, e.g. post(expr).
   VarDecl *ResultVar;
@@ -2061,13 +2076,21 @@ public:
 
   Expr *getPredicate() const { return Predicate; }
   void setPredicate(Expr *P) { Predicate = P; }
+  bool isInvalid() const { return Invalid; }
+  void setInvalid(bool I = true) { Invalid = I; }
   ContractAnnotationBase *getNext() const { return Next; }
   void setNext(ContractAnnotationBase *N) { Next = N; }
   VarDecl *getResultVar() const { return ResultVar; }
   void setResultVar(VarDecl *RV) { ResultVar = RV; }
+  /// \see ContractAnnotationBase<false>::getHandlerBody()
+  Stmt *getHandlerBody() const { return HandlerBody; }
+  void setHandlerBody(Stmt *S) { HandlerBody = S; }
   SourceLocation getKeywordLoc() const { return KwLoc; }
   SourceLocation getLParenLoc() const { return LParenLoc; }
   SourceLocation getRParenLoc() const { return RParenLoc; }
+
+private:
+  Stmt *HandlerBody = nullptr;
 };
 
 using PreContractAnnotation = ContractAnnotationBase<false>;
@@ -2641,12 +2664,30 @@ public:
   void setDeletedAsWritten(bool D = true, StringLiteral *Message = nullptr);
 
   /// \name C++26 Contracts (P2900R14)
+  ///
+  /// Per [dcl.contract.func], contracts are only allowed on the first
+  /// declaration of a function. A redeclaration may repeat identical contracts
+  /// or omit them entirely (inheriting the first declaration's contracts).
+  /// For virtual functions, contracts are inherited from overridden methods.
+  /// The accessors below fall back to the canonical (first) declaration and
+  /// walk the override chain so that callers (Sema, CodeGen, AST dumper, etc.)
+  /// always see the effective contracts regardless of which redeclaration
+  /// they hold.
   /// @{
-  bool hasContracts() const { return PreConditions || PostConditions; }
-  PreContractAnnotation *getPreConditions() const { return PreConditions; }
-  PostContractAnnotation *getPostConditions() const { return PostConditions; }
+  bool hasContracts() const;
+  PreContractAnnotation *getPreConditions() const;
+  PostContractAnnotation *getPostConditions() const;
   void setPreConditions(PreContractAnnotation *C) { PreConditions = C; }
   void setPostConditions(PostContractAnnotation *C) { PostConditions = C; }
+  void ProfileContracts(llvm::FoldingSetNodeID &ID) const;
+
+  /// Get contracts directly on this declaration, without checking
+  /// redeclaration or override chains. Used to check if this specific
+  /// declaration has its own contracts.
+  PreContractAnnotation *getDirectPreConditions() const { return PreConditions; }
+  PostContractAnnotation *getDirectPostConditions() const {
+    return PostConditions;
+  }
   /// @}
 
   /// Determines whether this function is "main", which is the

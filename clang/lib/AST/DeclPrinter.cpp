@@ -851,11 +851,15 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
 
   // C++26 Contracts: print pre/post-condition specifiers.
   for (auto *C = D->getPreConditions(); C; C = C->getNext()) {
+    if (C->isInvalid() || !C->getPredicate())
+      continue;
     Out << " pre(";
     C->getPredicate()->printPretty(Out, nullptr, Policy);
     Out << ")";
   }
   for (auto *C = D->getPostConditions(); C; C = C->getNext()) {
+    if (C->isInvalid() || !C->getPredicate())
+      continue;
     Out << " post(";
     if (auto *RV = C->getResultVar())
       Out << RV->getName() << ": ";

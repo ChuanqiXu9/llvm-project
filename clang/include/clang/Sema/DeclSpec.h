@@ -2062,6 +2062,10 @@ public:
     IdentifierInfo *ResultName = nullptr;
     /// The implicit VarDecl created for the result name during parsing.
     VarDecl *ResultVar = nullptr;
+    /// Cached tokens for delayed parsing of the predicate expression.
+    /// Used when parsing contract specifiers in member function declarators
+    /// where 'this' is not yet available.
+    std::unique_ptr<CachedTokens> PredicateTokens;
     SourceLocation KwLoc, LParenLoc, RParenLoc, ResultNameLoc;
   };
 
@@ -2713,6 +2717,7 @@ public:
     return ContractSpecifiers;
   }
   bool hasContractSpecifiers() const { return !ContractSpecifiers.empty(); }
+  void clearContractSpecifiers() { ContractSpecifiers.clear(); }
 
   /// Sets the template parameter lists that preceded the declarator.
   void setTemplateParameterLists(ArrayRef<TemplateParameterList *> TPLs) {

@@ -3667,6 +3667,11 @@ public:
   void EmitDoStmt(const DoStmt &S, ArrayRef<const Attr *> Attrs = {});
   void EmitForStmt(const ForStmt &S, ArrayRef<const Attr *> Attrs = {});
   void EmitReturnStmt(const ReturnStmt &S);
+  void EmitContractAssertStmt(const ContractAssertStmt &S);
+  /// Emit a contract check per [basic.contract.eval] (P2900R14).
+  void EmitContractCheck(Expr *Predicate, Stmt *HandlerBody);
+  void EmitPreConditions();
+  void EmitPostConditions();
   void EmitDeclStmt(const DeclStmt &S);
   void EmitBreakStmt(const BreakStmt &S);
   void EmitContinueStmt(const ContinueStmt &S);

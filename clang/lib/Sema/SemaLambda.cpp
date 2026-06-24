@@ -1488,6 +1488,10 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
       ParamInfo.getDeclSpec().getConstexprSpecifier(),
       IsLambdaStatic ? SC_Static : SC_None, Params, ExplicitResultType);
 
+  // P2900R14: Process contract specifiers on lambda call operators.
+  if (ParamInfo.hasContractSpecifiers())
+    ActOnFunctionContractSpecifiers(Method, ParamInfo);
+
   CheckCXXDefaultArguments(Method);
 
   // This represents the function body for the lambda function, check if we

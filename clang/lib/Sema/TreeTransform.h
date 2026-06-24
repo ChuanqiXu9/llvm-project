@@ -8648,9 +8648,8 @@ TreeTransform<Derived>::TransformContractAssertStmt(ContractAssertStmt *S) {
     return StmtError();
   if (!getDerived().AlwaysRebuild() && Cond.get() == S->getCondition())
     return S;
-  return new (getSema().Context)
-      ContractAssertStmt(Cond.get(), S->getContractAssertLoc(),
-                         S->getLParenLoc(), S->getRParenLoc());
+  return getSema().ActOnContractAssert(S->getContractAssertLoc(), Cond.get(),
+                                       S->getLParenLoc(), S->getRParenLoc());
 }
 
 template <typename Derived>

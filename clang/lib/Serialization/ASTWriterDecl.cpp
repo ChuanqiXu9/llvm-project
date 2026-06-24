@@ -934,10 +934,12 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
       ++NumPre;
     Record.push_back(NumPre);
     for (auto *C = D->getPreConditions(); C; C = C->getNext()) {
+      Record.push_back(C->isInvalid());
       Record.AddStmt(C->getPredicate());
       Record.AddSourceLocation(C->getKeywordLoc());
       Record.AddSourceLocation(C->getLParenLoc());
       Record.AddSourceLocation(C->getRParenLoc());
+      Record.AddStmt(C->getHandlerBody());
     }
 
     unsigned NumPost = 0;
@@ -945,11 +947,13 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
       ++NumPost;
     Record.push_back(NumPost);
     for (auto *C = D->getPostConditions(); C; C = C->getNext()) {
+      Record.push_back(C->isInvalid());
       Record.AddStmt(C->getPredicate());
       Record.AddSourceLocation(C->getKeywordLoc());
       Record.AddSourceLocation(C->getLParenLoc());
       Record.AddSourceLocation(C->getRParenLoc());
       Record.AddDeclRef(C->getResultVar());
+      Record.AddStmt(C->getHandlerBody());
     }
   }
 

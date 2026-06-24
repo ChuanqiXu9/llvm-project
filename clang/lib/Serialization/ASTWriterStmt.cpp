@@ -333,7 +333,11 @@ void ASTStmtWriter::VisitBreakStmt(BreakStmt *S) {
 
 void ASTStmtWriter::VisitContractAssertStmt(ContractAssertStmt *S) {
   VisitStmt(S);
+  Record.AddSourceLocation(S->getContractAssertLoc());
+  Record.AddSourceLocation(S->getLParenLoc());
+  Record.AddSourceLocation(S->getRParenLoc());
   Record.AddStmt(S->getCondition());
+  Record.AddStmt(S->getHandlerBody());
   Code = serialization::STMT_CONTRACT_ASSERT;
 }
 
