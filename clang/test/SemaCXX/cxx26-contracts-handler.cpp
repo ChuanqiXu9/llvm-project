@@ -2,9 +2,8 @@
 
 // === 1. Missing contract_violation ===
 namespace std::contracts {
-  enum class assertion_kind : unsigned short { pre = 1, post = 2, assert = 3 };
-  enum class evaluation_semantic : unsigned short { ignore = 1, observe = 2, enforce = 3, quick_enforce = 4 };
-  enum class detection_mode : unsigned short { predicate_false = 1, evaluation_exception = 2 };
+  enum class contract_kind : unsigned char { pre, post, assert_kind };
+  enum class detection_mode_t : unsigned char { predicate_false };
   void handle_contract_violation(int);
 }
 int f1(int x) pre(x > 0); // expected-error {{cannot use contract assertions: class 'std::contracts::contract_violation' not found; include <contracts> to use contract assertions}}

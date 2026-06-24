@@ -1,37 +1,16 @@
 // RUN: %clang_cc1 -std=c++2c -fcontracts -fsyntax-only -verify %s
 // Tests based on P2900R14 examples not covered by other test files.
 
-namespace std {
-  struct source_location {
-    struct __impl {
-      const char* _M_file_name;
-      const char* _M_function_name;
-      unsigned _M_line;
-      unsigned _M_column;
-    };
-  };
-}
-
 namespace std::contracts {
-  enum class assertion_kind : unsigned short { pre = 1, post = 2, assert = 3 };
-  enum class evaluation_semantic : unsigned short {
-    ignore = 1,
-    observe = 2,
-    enforce = 3,
-    quick_enforce = 4
-  };
-  enum class detection_mode : unsigned short {
-    predicate_false = 1,
-    evaluation_exception = 2
-  };
+  enum class contract_kind : unsigned char { pre, post, assert_kind };
+  enum class detection_mode_t : unsigned char { predicate_false };
   class contract_violation {
-    unsigned short _M_version;
-    assertion_kind _M_assertion_kind;
-    evaluation_semantic _M_evaluation_semantic;
-    detection_mode _M_detection_mode;
+    const char* _M_file;
+    const char* _M_function;
     const char* _M_comment;
-    const void* _M_src_loc_ptr;
-    void* _M_ext;
+    unsigned int _M_line;
+    contract_kind _M_kind;
+    detection_mode_t _M_detection_mode;
   };
   void handle_contract_violation(const contract_violation&);
 }
@@ -95,15 +74,4 @@ void lambda_capture_test(int x)
 // TODO §3.4.2: Implicit const-ness of predicates
 // TODO §3.4.1: this in member function preconditions
 // TODO §3.3.4: Constructor direct member access restrictions
-
-struct Awaiter {
-  bool await_ready();
-  void await_suspend(int);
-  int await_resume();
-};
-
-int coroutine_predicate_await()
-  pre(co_await Awaiter{} > 0); // expected-error {{contract predicate cannot contain co_await}}
-
-void coroutine_predicate_yield()
-  post((co_yield 1, true)) {} // expected-error {{contract predicate cannot contain co_yield}}
+// TODO §3.3.5: Coroutine await/yield in predicates

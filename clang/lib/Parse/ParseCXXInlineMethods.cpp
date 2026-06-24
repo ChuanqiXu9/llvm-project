@@ -562,7 +562,6 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
       }
 
       // Parse the predicate expression.
-      Sema::ContractPredicateEvaluationRAII ContractPredicateContext(Actions);
       ExprResult Predicate = ParseConditionalExpression();
 
       // Close the result name scope before consuming ')' so that the

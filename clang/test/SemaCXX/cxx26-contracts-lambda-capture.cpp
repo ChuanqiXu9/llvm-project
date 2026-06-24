@@ -1,36 +1,11 @@
 // RUN: %clang_cc1 -std=c++2c -fcontracts -fsyntax-only -verify %s
 
-namespace std {
-  struct source_location {
-    struct __impl {
-      const char* _M_file_name;
-      const char* _M_function_name;
-      unsigned _M_line;
-      unsigned _M_column;
-    };
-  };
-}
-
 namespace std::contracts {
-  enum class assertion_kind : unsigned short { pre = 1, post = 2, assert = 3 };
-  enum class evaluation_semantic : unsigned short {
-    ignore = 1,
-    observe = 2,
-    enforce = 3,
-    quick_enforce = 4
-  };
-  enum class detection_mode : unsigned short {
-    predicate_false = 1,
-    evaluation_exception = 2
-  };
+  enum class contract_kind : unsigned char { pre, post, assert_kind };
+  enum class detection_mode_t : unsigned char { predicate_false };
   class contract_violation {
-    unsigned short _M_version;
-    assertion_kind _M_assertion_kind;
-    evaluation_semantic _M_evaluation_semantic;
-    detection_mode _M_detection_mode;
-    const char* _M_comment;
-    const void* _M_src_loc_ptr;
-    void* _M_ext;
+    const char* _M_file; const char* _M_function; const char* _M_comment;
+    unsigned int _M_line; contract_kind _M_kind; detection_mode_t _M_detection_mode;
   };
   void handle_contract_violation(const contract_violation&);
 }
@@ -60,10 +35,10 @@ void test() {
 
   // Mixed: explicit capture of one, implicit use of another
   auto f8 = [local_i] pre(local_i > 0 && local_j > 0) {};  // expected-error {{variable 'local_j' cannot be implicitly captured in a lambda with no capture-default specified}} \
-                                                              // expected-note@51 {{'local_j' declared here}} \
-                                                              // expected-note@62 {{lambda expression begins here}} \
-                                                              // expected-note@62 {{capture 'local_j' by value}} \
-                                                              // expected-note@62 {{capture 'local_j' by reference}}
+                                                              // expected-note@26 {{'local_j' declared here}} \
+                                                              // expected-note@37 {{lambda expression begins here}} \
+                                                              // expected-note@37 {{capture 'local_j' by value}} \
+                                                              // expected-note@37 {{capture 'local_j' by reference}}
 
   // Multiple variables in predicate
   auto f9 = [=] pre(local_i + local_j > 0) {};  // expected-error {{contract predicate cannot implicitly capture 'local_i'; explicitly capture it in the lambda}}
@@ -75,12 +50,12 @@ void test() {
 
   // Lambda without default capture - must explicitly capture
   auto f13 = [] pre(local_i > 0) {};  // expected-error {{variable 'local_i' cannot be implicitly captured in a lambda with no capture-default specified}} \
-                                       // expected-note@50 {{'local_i' declared here}} \
-                                       // expected-note@77 {{lambda expression begins here}} \
-                                       // expected-note@77 {{capture 'local_i' by value}} \
-                                       // expected-note@77 {{capture 'local_i' by reference}} \
-                                       // expected-note@77 {{default capture by value}} \
-                                       // expected-note@77 {{default capture by reference}}
+                                       // expected-note@25 {{'local_i' declared here}} \
+                                       // expected-note@52 {{lambda expression begins here}} \
+                                       // expected-note@52 {{capture 'local_i' by value}} \
+                                       // expected-note@52 {{capture 'local_i' by reference}} \
+                                       // expected-note@52 {{default capture by value}} \
+                                       // expected-note@52 {{default capture by reference}}
 
   // Nested lambdas
   auto f14 = [=] {
