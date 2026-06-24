@@ -160,6 +160,7 @@ void CodeGenFunction::EmitStmt(const Stmt *S, ArrayRef<const Attr *> Attrs) {
   case Stmt::ForStmtClass:     EmitForStmt(cast<ForStmt>(*S), Attrs);     break;
 
   case Stmt::ReturnStmtClass:  EmitReturnStmt(cast<ReturnStmt>(*S));      break;
+  case Stmt::ContractAssertStmtClass: break; // TODO: implement in CodeGen
 
   case Stmt::SwitchStmtClass:  EmitSwitchStmt(cast<SwitchStmt>(*S));      break;
   case Stmt::GCCAsmStmtClass:  // Intentional fall-through.
