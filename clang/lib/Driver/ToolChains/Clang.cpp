@@ -7322,6 +7322,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       types::isCXX(InputType))
     CmdArgs.push_back("-fcoro-aligned-allocation");
 
+  Args.addOptInFlag(CmdArgs, options::OPT_fcontracts,
+                    options::OPT_fno_contracts);
+  Args.AddLastArg(CmdArgs, options::OPT_fcontract_mode_EQ);
+
   if (Args.hasFlag(options::OPT_fdefer_ts, options::OPT_fno_defer_ts,
                    /*Default=*/false))
     CmdArgs.push_back("-fdefer-ts");
