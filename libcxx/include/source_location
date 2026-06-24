@@ -40,6 +40,10 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
 #  if _LIBCPP_STD_VER >= 20
 
+namespace contracts {
+class contract_violation;
+}
+
 class source_location {
   // The names source_location::__impl, _M_file_name, _M_function_name, _M_line, and _M_column
   // are hard-coded in the compiler and must not be changed here.
@@ -56,6 +60,8 @@ class source_location {
   // type unless the builtin returned that, anyhow, and the invalid cast is
   // unavoidable.
   using __bsl_ty _LIBCPP_NODEBUG = decltype(__builtin_source_location());
+
+  friend class contracts::contract_violation;
 
 public:
   // The defaulted __ptr argument is necessary so that the builtin is evaluated

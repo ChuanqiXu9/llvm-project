@@ -2020,6 +2020,11 @@ module std [system] {
     export *
   }
 
+  module contracts {
+    header "contracts"
+    export *
+  }
+
   module source_location {
     header "source_location"
     export *

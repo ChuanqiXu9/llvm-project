@@ -4387,6 +4387,10 @@
 #    error "__cpp_lib_source_location should have the value 201907L in c++20"
 #  endif
 
+#  ifdef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should not be defined before c++26"
+#  endif
+
 #  ifndef __cpp_lib_span
 #    error "__cpp_lib_span should be defined in c++20"
 #  endif
@@ -6029,6 +6033,10 @@
 #  endif
 #  if __cpp_lib_source_location != 201907L
 #    error "__cpp_lib_source_location should have the value 201907L in c++23"
+#  endif
+
+#  ifdef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should not be defined before c++26"
 #  endif
 
 #  ifndef __cpp_lib_span
@@ -8015,6 +8023,13 @@
 #  endif
 #  if __cpp_lib_source_location != 201907L
 #    error "__cpp_lib_source_location should have the value 201907L in c++26"
+#  endif
+
+#  ifndef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should be defined in c++26"
+#  endif
+#  if __cpp_lib_contracts != 202502L
+#    error "__cpp_lib_contracts should have the value 202502L in c++26"
 #  endif
 
 #  ifndef __cpp_lib_span
