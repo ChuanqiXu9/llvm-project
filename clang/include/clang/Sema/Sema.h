@@ -913,6 +913,25 @@ class Sema final : public SemaBase {
   ///@{
 
 public:
+
+  class ContractPredicateEvaluationRAII {
+    Sema &S;
+
+  public:
+    explicit ContractPredicateEvaluationRAII(Sema &S) : S(S) {
+      ++S.ContractPredicateEvaluationDepth;
+    }
+
+    ~ContractPredicateEvaluationRAII() {
+      assert(S.ContractPredicateEvaluationDepth &&
+             "leaving contract predicate context with zero depth");
+      --S.ContractPredicateEvaluationDepth;
+    }
+  };
+
+  bool isParsingContractPredicate() const {
+    return ContractPredicateEvaluationDepth != 0;
+  }
   Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
        TranslationUnitKind TUKind = TU_Complete,
        CodeCompleteConsumer *CompletionConsumer = nullptr);
@@ -6095,18 +6114,24 @@ public:
 
   /// Look up std::contracts::contract_violation ([support.contract.cviol])
   /// and std::contracts::handle_contract_violation ([support.contract.handle]).
-  /// Results are cached in StdContractViolationDecl /
-  /// StdHandleContractViolationDecl following the StdCoroutineTraitsCache
-  /// pattern. Returns true if both were found.
+  /// Validate the libstdc++-compatible public enums and object layout that
+  /// Clang consumes when synthesizing a contract violation object.
+  ///
+  /// This is a deliberate implementation decision: for practical
+  /// interoperability, Clang currently targets GCC/libstdc++'s shipped
+  /// contracts ABI instead of a paper-only abstraction boundary. Results are
+  /// cached following the StdCoroutineTraitsCache pattern.
   enum class ContractViolationLookupFailure {
     None,
     MissingNamespace,
     MissingContractViolation,
     IncompleteContractViolation,
-    MissingContractKind,
-    MissingDetectionMode,
     MalformedContractViolation,
+    MissingAssertionKind,
+    MissingEvaluationSemantic,
+    MissingDetectionMode,
     MissingHandlerFunction,
+    MalformedHandlerFunction,
   };
   ContractViolationLookupFailure LookupContractViolationHandler(SourceLocation Loc);
 
@@ -6115,10 +6140,15 @@ public:
   /// "[basic.contract.eval] p5: The contract-violation handler is the function
   ///  std::contracts::handle_contract_violation ([support.contract.handle])."
   ///
+  /// The synthesized body follows the current GCC/libstdc++ integration model:
+  /// materialize a layout-compatible internal object and pass it as
+  /// const contract_violation&. This is intentionally an ABI-compatibility
+  /// choice, not an attempt to model only the paper's abstract interface.
+  ///
   /// \param PredicateRange source range of the predicate expression, used to
   ///   extract the text for contract_violation::comment() ([support.contract.cviol]).
-  /// \param KindVal maps to contract_kind ([support.contract.cviol]):
-  ///   0 = pre, 1 = post, 2 = assert.
+  /// \param KindVal maps to assertion_kind ([support.contract.cviol]):
+  ///   1 = pre, 2 = post, 3 = assert.
   Stmt *BuildContractHandlerBody(SourceLocation ContractLoc,
                                  SourceRange PredicateRange, unsigned KindVal,
                                  FunctionDecl *EnclosingFD);
@@ -6129,13 +6159,17 @@ public:
   /// the predicate expression, and builds the handler body.
   void RebuildDeducedReturnTypePostConditions(FunctionDecl *FD);
 
+  unsigned ContractPredicateEvaluationDepth = 0;
+
   /// Cached std::contracts::contract_violation ([support.contract.cviol]).
   CXXRecordDecl *StdContractViolationDecl = nullptr;
   /// Cached std::contracts::handle_contract_violation ([support.contract.handle]).
   FunctionDecl *StdHandleContractViolationDecl = nullptr;
-  /// Cached std::contracts::contract_kind ([support.contract.cviol]).
-  EnumDecl *StdContractKindDecl = nullptr;
-  /// Cached std::contracts::detection_mode_t ([support.contract.cviol]).
+  /// Cached std::contracts::assertion_kind ([support.contract.cviol]).
+  EnumDecl *StdAssertionKindDecl = nullptr;
+  /// Cached std::contracts::evaluation_semantic ([support.contract.cviol]).
+  EnumDecl *StdEvaluationSemanticDecl = nullptr;
+  /// Cached std::contracts::detection_mode ([support.contract.cviol]).
   EnumDecl *StdDetectionModeDecl = nullptr;
   bool ContractViolationLookupDone = false;
   ContractViolationLookupFailure ContractViolationLookupResult =

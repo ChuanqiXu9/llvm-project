@@ -4356,7 +4356,10 @@ void Parser::ParseContractSpecifiers(Declarator &D,
       }
     } else {
       // Parse immediately for non-member functions or virtual functions
-      Predicate = ParseConditionalExpression();
+      {
+        Sema::ContractPredicateEvaluationRAII ContractPredicateContext(Actions);
+        Predicate = ParseConditionalExpression();
+      }
     }
 
     // Close the result name scope before consuming ')' so that the
