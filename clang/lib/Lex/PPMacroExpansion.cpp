@@ -205,7 +205,9 @@ void Preprocessor::updateModuleMacroInfo(const IdentifierInfo *II,
   }
   while (!Worklist.empty()) {
     auto *MM = Worklist.pop_back_val();
-    if (CurSubmoduleState->VisibleModules.isVisible(MM->getOwningModule())) {
+    Module *OwningModule = MM->getOwningModule();
+    if (CurSubmoduleState->VisibleModules.isVisible(OwningModule) ||
+        (OwningModule && OwningModule->exportsMacros())) {
       // We only care about collecting definitions; undefinitions only act
       // to override other definitions.
       if (MM->getMacroInfo())

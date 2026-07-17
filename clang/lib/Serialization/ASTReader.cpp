@@ -6433,6 +6433,7 @@ Module *ASTReader::getSubmodule(uint32_t GlobalID) {
       bool ConfigMacrosExhaustive = Record[Idx++];
       bool ModuleMapIsPrivate = Record[Idx++];
       bool NamedModuleHasInit = Record[Idx++];
+      bool ExportsMacros = Idx < Record.size() ? Record[Idx++] : false;
 
       Module *ParentModule = nullptr;
       if (Parent) {
@@ -6493,6 +6494,7 @@ Module *ASTReader::getSubmodule(uint32_t GlobalID) {
       CurrentModule->ConfigMacrosExhaustive = ConfigMacrosExhaustive;
       CurrentModule->ModuleMapIsPrivate = ModuleMapIsPrivate;
       CurrentModule->NamedModuleHasInit = NamedModuleHasInit;
+      CurrentModule->ExportsMacros = ExportsMacros;
 
       if (!ParentModule && !F.BaseDirectory.empty()) {
         if (auto Dir = FileMgr.getOptionalDirectoryRef(F.BaseDirectory))

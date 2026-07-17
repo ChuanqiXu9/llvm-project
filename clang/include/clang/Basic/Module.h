@@ -449,6 +449,8 @@ public:
 
   bool isModuleMapModule() const { return Kind == ModuleMapModule; }
 
+  bool exportsMacros() const { return getTopLevelModule()->ExportsMacros; }
+
 private:
   /// The submodules of this module, indexed by name.
   std::vector<ModuleRef> SubModules;
@@ -637,6 +639,10 @@ public:
   /// This is only meaningful for C++20 modules.
   LLVM_PREFERRED_TYPE(bool)
   unsigned NamedModuleHasInit : 1;
+
+  /// Whether this module exports macros from its global module fragment.
+  LLVM_PREFERRED_TYPE(bool)
+  unsigned ExportsMacros : 1;
 
   /// Describes the visibility of the various names within a
   /// particular module.

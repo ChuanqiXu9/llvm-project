@@ -385,6 +385,14 @@ struct PragmaAttributeHandler : public PragmaHandler {
   ParsedAttributes AttributesForPragmaAttribute;
 };
 
+/// PragmaACCModulesHandler - "\#pragma ACC modules ...".
+struct PragmaACCModulesHandler : public PragmaHandler {
+  PragmaACCModulesHandler() : PragmaHandler("modules") {}
+
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &FirstToken) override;
+};
+
 struct PragmaMaxTokensHereHandler : public PragmaHandler {
   PragmaMaxTokensHereHandler() : PragmaHandler("max_tokens_here") {}
   void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
@@ -561,6 +569,9 @@ void Parser::initializePragmaHandlers() {
       std::make_unique<PragmaAttributeHandler>(AttrFactory);
   PP.AddPragmaHandler("clang", AttributePragmaHandler.get());
 
+  ACCModulesPragmaHandler = std::make_unique<PragmaACCModulesHandler>();
+  PP.AddPragmaHandler("ACC", ACCModulesPragmaHandler.get());
+
   MaxTokensHerePragmaHandler = std::make_unique<PragmaMaxTokensHereHandler>();
   PP.AddPragmaHandler("clang", MaxTokensHerePragmaHandler.get());
 
@@ -700,6 +711,9 @@ void Parser::resetPragmaHandlers() {
 
   PP.RemovePragmaHandler("clang", AttributePragmaHandler.get());
   AttributePragmaHandler.reset();
+
+  PP.RemovePragmaHandler("ACC", ACCModulesPragmaHandler.get());
+  ACCModulesPragmaHandler.reset();
 
   PP.RemovePragmaHandler("clang", MaxTokensHerePragmaHandler.get());
   MaxTokensHerePragmaHandler.reset();
@@ -4190,6 +4204,26 @@ void PragmaAttributeHandler::HandlePragma(Preprocessor &PP,
   TokenArray[0].setAnnotationValue(static_cast<void *>(Info));
   PP.EnterTokenStream(std::move(TokenArray), 1,
                       /*DisableMacroExpansion=*/false, /*IsReinject=*/false);
+}
+
+void PragmaACCModulesHandler::HandlePragma(Preprocessor &PP,
+                                           PragmaIntroducer Introducer,
+                                           Token &FirstToken) {
+  Token Tok;
+  std::string Value;
+
+  if (!PP.LexStringLiteral(Tok, Value, "pragma ACC modules",
+                           /*AllowMacroExpansion=*/false)) {
+    PP.Diag(Tok.getLocation(), diag::err_pragma_modules);
+    return;
+  }
+
+  if (Value == "export-macros") {
+    const_cast<LangOptions &>(PP.getLangOpts()).ModulesExportMacros = true;
+    return;
+  }
+
+  PP.Diag(Tok.getLocation(), diag::err_pragma_modules_unknown_value);
 }
 
 // Handle '#pragma clang max_tokens 12345'.

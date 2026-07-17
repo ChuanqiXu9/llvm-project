@@ -44,7 +44,7 @@ Module::Module(ModuleConstructorTag, StringRef Name,
       InferSubmodules(false), InferExplicitSubmodules(false),
       InferExportWildcard(false), ConfigMacrosExhaustive(false),
       NoUndeclaredIncludes(false), ModuleMapIsPrivate(false),
-      NamedModuleHasInit(true), NameVisibility(Hidden) {
+      NamedModuleHasInit(true), ExportsMacros(false), NameVisibility(Hidden) {
   if (Parent) {
     IsAvailable = Parent->isAvailable();
     IsUnimportable = Parent->isUnimportable();
@@ -52,6 +52,7 @@ Module::Module(ModuleConstructorTag, StringRef Name,
     IsExternC = Parent->IsExternC;
     NoUndeclaredIncludes = Parent->NoUndeclaredIncludes;
     ModuleMapIsPrivate = Parent->ModuleMapIsPrivate;
+    ExportsMacros = Parent->ExportsMacros;
 
     Parent->addSubmodule(Name, this);
   }

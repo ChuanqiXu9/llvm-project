@@ -4080,6 +4080,10 @@ static bool RenderModulesOptions(Compilation &C, const Driver &D,
   if (HaveModules && !AllowedInCXX)
     CmdArgs.push_back("-fno-cxx-modules");
 
+  Args.addOptInFlag(CmdArgs, options::OPT_fmodules_export_macros,
+                    options::OPT_fno_modules_export_macros);
+  Args.AddLastArg(CmdArgs, options::OPT_try_load_bmi_when_preprocessing);
+
   // -fmodule-maps enables implicit reading of module map files. By default,
   // this is enabled if we are using Clang's flavor of precompiled modules.
   if (Args.hasFlag(options::OPT_fimplicit_module_maps,

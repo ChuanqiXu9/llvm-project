@@ -2248,6 +2248,16 @@ defm cxx_modules : BoolFOption<"cxx-modules",
   PosFlag<SetTrue, [], [ClangOption], "Enable">,
   BothFlags<[], [], " modules for C++">>,
   ShouldParseIf<cplusplus.KeyPath>;
+defm modules_export_macros : BoolFOption<"modules-export-macros",
+  LangOpts<"ModulesExportMacros">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable exporting macros from C++ named modules">,
+  NegFlag<SetFalse>>;
+def try_load_bmi_when_preprocessing : Flag<["-"], "try-load-bmi-when-preprocessing">,
+  Flags<[NoXarchOption]>, Visibility<[ClangOption, CC1Option]>,
+  Group<Preprocessor_Group>,
+  HelpText<"Try to load module files while preprocessing to read macro definitions">,
+  MarshallingInfoFlag<PreprocessorOpts<"TryLoadModules">>;
 def fdebug_pass_arguments : Flag<["-"], "fdebug-pass-arguments">, Group<f_Group>;
 def fdebug_pass_structure : Flag<["-"], "fdebug-pass-structure">, Group<f_Group>;
 def fdepfile_entry : Joined<["-"], "fdepfile-entry=">,

@@ -1414,6 +1414,10 @@ def err_pragma_attribute_expected_attribute_syntax : Error<
   " syntax">;
 def note_pragma_attribute_use_attribute_kw : Note<"use the GNU '__attribute__' "
   "syntax">;
+def err_pragma_modules : Error<
+  "incorrect syntax for '#pragma ACC modules'">;
+def err_pragma_modules_unknown_value : Error<
+  "unknown value for '#pragma ACC modules'; valid value is \"export-macros\"">;
 def err_pragma_attribute_invalid_subject_set_specifier : Error<
   "expected attribute subject set specifier 'apply_to'">;
 def err_pragma_attribute_expected_subject_identifier : Error<

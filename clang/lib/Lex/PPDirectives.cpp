@@ -4250,7 +4250,7 @@ void Preprocessor::HandleCXXImportDirective(Token ImportTok) {
     std::string FlatName;
     bool IsValid =
         (IsPartition && ModuleDeclState.isNamedModule()) || !IsPartition;
-    if (Callbacks && IsValid) {
+    if (IsValid) {
       if (IsPartition && ModuleDeclState.isNamedModule()) {
         FlatName += ModuleDeclState.getPrimaryName();
         FlatName += ":";
@@ -4259,12 +4259,22 @@ void Preprocessor::HandleCXXImportDirective(Token ImportTok) {
       FlatName += ModuleLoader::getFlatNameFromPath(Path);
       SourceLocation StartLoc = IsPartition ? UseLoc : Path[0].getLoc();
       IdentifierLoc FlatNameLoc(StartLoc, getIdentifierInfo(FlatName));
+      ModuleIdPath FlatPath(FlatNameLoc);
+      Module *Imported = nullptr;
 
-      // We don't/shouldn't load the standard c++20 modules when preprocessing.
-      // so the imported module is nullptr.
-      Callbacks->moduleImport(ImportTok.getLocation(),
-                              ModuleIdPath(FlatNameLoc),
-                              /*Imported=*/nullptr);
+      // We don't load standard C++20 modules when preprocessing unless
+      // explicitly requested. This keeps the default preprocessing-only path
+      // lightweight, while allowing imported macros to be read on demand.
+      if (getLangOpts().Modules && getPreprocessorOpts().TryLoadModules) {
+        Imported = TheModuleLoader.loadModule(ImportTok.getLocation(), FlatPath,
+                                              Module::Hidden,
+                                              /*IsInclusionDirective=*/false);
+        if (Imported)
+          makeModuleVisible(Imported, ImportTok.getLocation());
+      }
+
+      if (Callbacks)
+        Callbacks->moduleImport(ImportTok.getLocation(), FlatPath, Imported);
     }
     break;
   }

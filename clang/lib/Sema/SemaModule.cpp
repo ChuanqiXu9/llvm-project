@@ -397,6 +397,8 @@ Sema::ActOnModuleDecl(SourceLocation StartLoc, SourceLocation ModuleLoc,
     Mod = Map.createModuleForInterfaceUnit(ModuleLoc, ModuleName);
     if (MDK == ModuleDeclKind::PartitionInterface)
       Mod->Kind = Module::ModulePartitionInterface;
+    if (getLangOpts().ModulesExportMacros)
+      Mod->ExportsMacros = true;
     assert(Mod && "module creation should not fail");
     break;
   }
@@ -637,6 +639,9 @@ DeclResult Sema::ActOnModuleImport(SourceLocation StartLoc,
                                  getCurrentModule(), ImportLoc);
   else
     VisibleModules.setVisible(Mod, ImportLoc);
+
+  if (Mod->exportsMacros())
+    PP.makeModuleVisible(Mod, ImportLoc);
 
   assert((!Mod->isModulePartitionImplementation() || getCurrentModule()) &&
          "We can only import a partition unit in a named module.");

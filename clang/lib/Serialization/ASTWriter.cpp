@@ -2635,7 +2635,8 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
   SmallVector<const IdentifierInfo *, 128> MacroIdentifiers;
   // It is meaningless to emit macros for named modules. It only wastes times
   // and spaces.
-  if (!isWritingStdCXXNamedModules())
+  if (!isWritingStdCXXNamedModules() ||
+      (WritingModule && WritingModule->exportsMacros()))
     for (auto &Id : PP.getIdentifierTable())
       if (Id.second->hadMacroDefinition() &&
           (!Id.second->isFromAST() ||
@@ -2661,7 +2662,9 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
     // do not have sub-modules (although they might import other header units).
     // PCH files, conversely, retain the history of each macro's define/undef
     // and of leaf macros in sub modules.
-    if (IsModule && WritingModule->isHeaderUnit()) {
+    if (IsModule && (WritingModule->isHeaderUnit() ||
+                     (WritingModule->isModuleInterfaceUnit() &&
+                      WritingModule->exportsMacros()))) {
       // This is for the main TU when it is a C++20 header unit.
       // We preserve the final state of defined macros, and we do not emit ones
       // that are undefined.
@@ -2988,6 +2991,7 @@ void ASTWriter::WriteSubmodules(Module *WritingModule, ASTContext *Context) {
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ConfigMacrosExh...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ModuleMapIsPriv...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // NamedModuleHasN...
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ExportsMacros
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Name
   unsigned DefinitionAbbrev = Stream.EmitAbbrev(std::move(Abbrev));
 
@@ -3123,7 +3127,8 @@ void ASTWriter::WriteSubmodules(Module *WritingModule, ASTContext *Context) {
                                          Mod->InferExportWildcard,
                                          Mod->ConfigMacrosExhaustive,
                                          Mod->ModuleMapIsPrivate,
-                                         Mod->NamedModuleHasInit};
+                                         Mod->NamedModuleHasInit,
+                                         Mod->ExportsMacros};
       Stream.EmitRecordWithBlob(DefinitionAbbrev, Record, Mod->Name);
     }
 

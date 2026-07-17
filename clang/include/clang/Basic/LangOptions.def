@@ -156,6 +156,7 @@ LANGOPT(MathErrno         , 1, 1, NotCompatible, "errno in math functions")
 LANGOPT(Modules           , 1, 0, NotCompatible, "modules semantics")
 LANGOPT(ClangModules      , 1, 0, Compatible, "Clang header modules")
 LANGOPT(CPlusPlusModules  , 1, 0, Compatible, "C++ modules syntax")
+LANGOPT(ModulesExportMacros, 1, 0, Compatible, "exporting macros from named modules")
 LANGOPT(SkipODRCheckInGMF , 1, 0, NotCompatible, "Skip ODR checks for decls in the global module fragment")
 LANGOPT(BuiltinHeadersInSystemModules, 1, 0, NotCompatible, "builtin headers belong to system modules, and _Builtin_ modules are ignored for cstdlib headers")
 ENUM_LANGOPT(CompilingModule, CompilingModuleKind, 3, CMK_None, Benign,

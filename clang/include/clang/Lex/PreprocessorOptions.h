@@ -123,6 +123,10 @@ public:
   DisableValidationForModuleKind DisablePCHOrModuleValidation =
       DisableValidationForModuleKind::None;
 
+  /// When true, the preprocessor will try to load modules to read macro
+  /// definitions while preprocessing.
+  bool TryLoadModules = false;
+
   /// When true, a PCH with compiler errors will not be rejected.
   bool AllowPCHWithCompilerErrors = false;
 
