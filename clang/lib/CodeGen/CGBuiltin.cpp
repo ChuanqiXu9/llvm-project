@@ -5944,6 +5944,20 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
   case Builtin::BI__addressof:
   case Builtin::BI__builtin_addressof:
     return RValue::get(EmitLValue(E->getArg(0)).getPointer(*this));
+  case Builtin::BI__builtin_contract_violation_handler: {
+    const auto *PtrTy = E->getArg(0)->getType()->castAs<PointerType>();
+    QualType ViolationType = PtrTy->getPointeeType().getUnqualifiedType();
+    QualType ParamType =
+        getContext().getLValueReferenceType(ViolationType.withConst());
+    StringRef Name = CGM.getContractViolationHandlerName(ViolationType);
+    QualType ParamTypes[] = {ParamType};
+    llvm::FunctionCallee Handler =
+        CGM.CreateRuntimeFunction(getContext().VoidTy, ParamTypes, Name);
+    llvm::Value *Violation = EmitScalarExpr(E->getArg(0));
+    llvm::Value *Args[] = {Violation};
+    EmitRuntimeCallOrInvoke(Handler, Args);
+    return RValue::get(nullptr);
+  }
   case Builtin::BI__builtin_function_start:
     return RValue::get(CGM.GetFunctionStart(
         E->getArg(0)->getAsBuiltinConstantDeclRef(CGM.getContext())));

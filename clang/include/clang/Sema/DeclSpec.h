@@ -2055,6 +2055,28 @@ private:
   friend struct DeclaratorChunk;
 
 public:
+  /// Parsed contract specifier from a function declarator (pre/post).
+  /// Temporary storage during parsing; converted to ContractAnnotation
+  /// nodes on FunctionDecl by Sema::ActOnFunctionContractSpecifiers.
+  struct ContractSpecInfo {
+    enum Kind { Pre, Post };
+    Kind CKind;
+    Expr *Predicate = nullptr;
+    /// For post(name: expr), the identifier for the result name.
+    IdentifierInfo *ResultName = nullptr;
+    /// The implicit VarDecl created for the result name during parsing.
+    VarDecl *ResultVar = nullptr;
+    /// Cached tokens for delayed parsing of the predicate expression.
+    /// Used when parsing contract specifiers in member function declarators
+    /// where 'this' is not yet available.
+    std::unique_ptr<CachedTokens> PredicateTokens;
+    SourceLocation KwLoc, LParenLoc, RParenLoc, ResultNameLoc;
+  };
+
+private:
+  SmallVector<ContractSpecInfo, 2> ContractSpecifiers;
+
+public:
   /// `DS` and `DeclarationAttrs` must outlive the `Declarator`. In particular,
   /// take care not to pass temporary objects for these parameters.
   ///
@@ -2534,6 +2556,14 @@ public:
     return isFunctionDeclarator(index);
   }
 
+  /// Determine whether this declarator contains a function type chunk at any
+  /// level, including beneath a pointer, reference, or array chunk.
+  bool hasFunctionTypeChunk() const {
+    return llvm::any_of(DeclTypeInfo, [](const DeclaratorChunk &Chunk) {
+      return Chunk.Kind == DeclaratorChunk::Function;
+    });
+  }
+
   /// getFunctionTypeInfo - Retrieves the function type info object
   /// (looking through parentheses).
   DeclaratorChunk::FunctionTypeInfo &getFunctionTypeInfo() {
@@ -2691,6 +2721,18 @@ public:
   bool hasTrailingRequiresClause() const {
     return TrailingRequiresClause != nullptr;
   }
+
+  void addContractSpecifier(ContractSpecInfo &&Info) {
+    ContractSpecifiers.push_back(std::move(Info));
+  }
+  MutableArrayRef<ContractSpecInfo> getContractSpecifiers() {
+    return ContractSpecifiers;
+  }
+  ArrayRef<ContractSpecInfo> getContractSpecifiers() const {
+    return ContractSpecifiers;
+  }
+  bool hasContractSpecifiers() const { return !ContractSpecifiers.empty(); }
+  void clearContractSpecifiers() { ContractSpecifiers.clear(); }
 
   /// Sets the template parameter lists that preceded the declarator.
   void setTemplateParameterLists(ArrayRef<TemplateParameterList *> TPLs) {

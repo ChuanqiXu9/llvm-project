@@ -65,7 +65,6 @@ namespace {
     std::unique_ptr<llvm::Module> M;
     std::unique_ptr<CodeGen::CodeGenModule> Builder;
     SmallVector<FunctionDecl *, 8> DeferredInlineMemberFuncDefs;
-
     static llvm::StringRef ExpandModuleName(llvm::StringRef ModuleName,
                                             const CodeGenOptions &CGO) {
       if (ModuleName == "-" && !CGO.MainFileName.empty())
@@ -171,7 +170,6 @@ namespace {
       Builder.reset(new CodeGen::CodeGenModule(Context, FS, HeaderSearchOpts,
                                                PreprocessorOpts, CodeGenOpts,
                                                *M, Diags, CoverageInfo));
-
       for (auto &&Lib : CodeGenOpts.DependentLibraries)
         Builder->AddDependentLib(Lib);
       for (auto &&Opt : CodeGenOpts.LinkerOptions)

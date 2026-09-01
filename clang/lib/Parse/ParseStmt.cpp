@@ -158,6 +158,12 @@ Retry:
         getCurScope(), SemaCodeCompletion::PCC_Statement);
     return StmtError();
 
+  // C++26 contract_assert statement (P2900R14).
+  case tok::kw_contract_assert:
+    Res = ParseContractAssertStatement();
+    SemiError = "contract_assert";
+    break;
+
   case tok::identifier:
   ParseIdentifier: {
     Token Next = NextToken();
@@ -2474,6 +2480,31 @@ StmtResult Parser::ParseContinueStatement() {
 
 StmtResult Parser::ParseBreakStatement() {
   return ParseBreakOrContinueStatement(/*IsContinue=*/false);
+}
+
+/// ParseReturnStatement
+///       jump-statement:
+///         'return' expression[opt] ';'
+///         'return' braced-init-list ';'
+///         'co_return' expression[opt] ';'
+///         'co_return' braced-init-list ';'
+StmtResult Parser::ParseContractAssertStatement() {
+  SourceLocation ContractAssertLoc = ConsumeToken();
+  BalancedDelimiterTracker T(*this, tok::l_paren);
+  if (T.consumeOpen()) {
+    Diag(Tok, diag::err_expected_lparen_after) << "contract_assert";
+    SkipUntil(tok::semi);
+    return StmtError();
+  }
+  EnterExpressionEvaluationContext Evaluated(
+      Actions, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+  Sema::ContractPredicateEvaluationRAII ContractPredicateContext(Actions);
+  ExprResult Predicate = ParseConditionalExpression();
+  T.consumeClose();
+  if (Predicate.isInvalid())
+    return StmtError();
+  return Actions.ActOnContractAssert(ContractAssertLoc, Predicate.get(),
+                                     T.getOpenLocation(), T.getCloseLocation());
 }
 
 StmtResult Parser::ParseReturnStatement() {

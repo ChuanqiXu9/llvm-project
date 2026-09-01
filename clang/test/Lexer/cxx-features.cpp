@@ -5,6 +5,7 @@
 // RUN: %clang_cc1 -std=c++20 -fcxx-exceptions -verify %s
 // RUN: %clang_cc1 -std=c++23 -fcxx-exceptions -verify %s
 // RUN: %clang_cc1 -std=c++2c -fcxx-exceptions -verify %s
+// RUN: %clang_cc1 -std=c++20 -fcxx-exceptions -fcontracts -DCONTRACTS -verify %s
 
 // RUN: %clang_cc1 -std=c++20 -fcxx-exceptions -verify -triple i686-unknown-windows-msvc -DX86_MSVC_TARGET %s
 // RUN: %clang_cc1 -std=c++23 -fcxx-exceptions -verify -triple i686-unknown-windows-msvc -DX86_MSVC_TARGET %s
@@ -37,6 +38,14 @@
 #endif
 
 // --- C++26 features ---
+
+#if defined(CONTRACTS)
+#  if !defined(__cpp_contracts) || __cpp_contracts != 202502L
+#    error "wrong value for __cpp_contracts"
+#  endif
+#elif defined(__cpp_contracts)
+#  error "__cpp_contracts should only be defined when contracts are enabled"
+#endif
 
 #if check(variadic_friend, 202403, 202403, 202403, 202403, 202403, 202403, 202403)
 #error "wrong value for __cpp_variadic_friend"

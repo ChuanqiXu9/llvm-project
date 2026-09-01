@@ -44,7 +44,7 @@ namespace serialization {
 /// Version 4 of AST files also requires that the version control branch and
 /// revision match exactly, since there is no backward compatibility of
 /// AST files at this time.
-const unsigned VERSION_MAJOR = 39;
+const unsigned VERSION_MAJOR = 40;
 
 /// AST file minor version number supported by this version of
 /// Clang.
@@ -2096,6 +2096,7 @@ enum StmtCode {
   EXPR_HLSL_OUT_ARG,
 
   STMT_DEFER,
+  STMT_CONTRACT_ASSERT,
 };
 
 /// The kinds of designators that can occur in a

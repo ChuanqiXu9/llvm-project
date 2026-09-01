@@ -1237,9 +1237,27 @@ QualType Sema::getCurrentThisType() {
   // might need to be adjusted if the lambda or any of its enclosing lambda's
   // captures '*this' by copy.
   if (!ThisTy.isNull() && isLambdaCallOperator(CurContext))
-    return adjustCVQualifiersForCXXThisWithinLambda(FunctionScopes, ThisTy,
-                                                    CurContext, Context);
-  return ThisTy;
+    ThisTy = adjustCVQualifiersForCXXThisWithinLambda(FunctionScopes, ThisTy,
+                                                      CurContext, Context);
+  return adjustThisTypeForContractPredicate(ThisTy);
+}
+
+QualType Sema::adjustThisTypeForContractPredicate(QualType Type) {
+  if (!isInContractPredicateImplicitConstContext() ||
+      BuildingContractPredicateCaptureInit || Type.isNull() ||
+      !Type->isPointerType())
+    return Type;
+
+  for (unsigned I = ContractPredicateFunctionScopeDepth,
+                E = FunctionScopes.size();
+       I < E; ++I) {
+    auto *LSI = dyn_cast<LambdaScopeInfo>(FunctionScopes[I]);
+    if (LSI && LSI->isCXXThisCaptured() &&
+        LSI->getCXXThisCapture().isCopyCapture())
+      return Type;
+  }
+
+  return Context.getPointerType(Type->getPointeeType().withConst());
 }
 
 Sema::CXXThisScopeRAII::CXXThisScopeRAII(Sema &S,
@@ -1326,7 +1344,13 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
 
 
   unsigned NumCapturingClosures = 0;
-  for (int idx = MaxFunctionScopesIndex; idx >= 0; idx--) {
+  // A contract predicate can be instantiated while unrelated lambda scopes
+  // from the point of instantiation are still active. Only lambdas that are
+  // part of the predicate may capture its function's `this`.
+  const unsigned MinFunctionScopesIndex =
+      isParsingContractPredicate() ? ContractPredicateFunctionScopeDepth : 0;
+  for (int idx = MaxFunctionScopesIndex;
+       idx >= static_cast<int>(MinFunctionScopesIndex); idx--) {
     if (CapturingScopeInfo *CSI =
             dyn_cast<CapturingScopeInfo>(FunctionScopes[idx])) {
       if (CSI->CXXThisCaptureIndex != 0) {
@@ -1442,6 +1466,7 @@ bool Sema::CheckCXXThisType(SourceLocation Loc, QualType Type) {
 
 Expr *Sema::BuildCXXThisExpr(SourceLocation Loc, QualType Type,
                              bool IsImplicit) {
+  Type = adjustThisTypeForContractPredicate(Type);
   auto *This = CXXThisExpr::Create(Context, Loc, Type, IsImplicit);
   MarkThisReferenced(This);
   return This;

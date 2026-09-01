@@ -851,6 +851,18 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
           prettyPrintAttributes(D, AttrPosAsWritten::Right))
     Out << ' ' << *Attrs;
 
+  // C++26 Contracts: print function contract specifiers in source order.
+  for (auto *C = D->getContractAnnotations(); C; C = C->getNext()) {
+    if (C->isInvalid() || !C->getPredicate())
+      continue;
+    Out << (C->isPrecondition() ? " pre(" : " post(");
+    if (C->isPostcondition())
+      if (auto *RV = C->getResultVar())
+        Out << RV->getName() << ": ";
+    C->getPredicate()->printPretty(Out, nullptr, Policy);
+    Out << ")";
+  }
+
   if (D->isPureVirtual())
     Out << " = 0";
   else if (D->isDeletedAsWritten()) {

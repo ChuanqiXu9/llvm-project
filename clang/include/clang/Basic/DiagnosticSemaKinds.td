@@ -1794,6 +1794,48 @@ def err_static_assert_requirement_failed : Error<
 def note_expr_evaluates_to : Note<
   "expression evaluates to '%0 %1 %2'">;
 
+// C++26 Contracts (P2900R14)
+def err_static_assert_invalid_message : Error<
+  "the message in a static assertion must be a string literal or an "
+  "object with 'data()' and 'size()' member functions">;
+def err_post_condition_result_name_void_return : Error<
+  "post-condition result name on function returning void">;
+def err_contracts_on_non_first_declaration : Error<
+  "contracts may not be added on a function redeclaration">;
+def err_contracts_mismatch_redeclaration : Error<
+  "contracts on function redeclaration do not match the previous declaration">;
+def err_contracts_on_virtual : Error<
+  "contracts may not be specified on a virtual function at this time">;
+def err_contracts_on_deleted : Error<
+  "contracts may not be specified on a deleted function">;
+def err_contracts_on_defaulted : Error<
+  "contracts may not be specified on a defaulted function">;
+def err_contracts_on_function_pointer : Error<
+  "contracts may not be specified on a function pointer type">;
+def err_contracts_on_type_alias : Error<
+  "contracts may not be specified on a type alias">;
+def err_contract_postcondition_nonconst_param : Error<
+  "parameter %0 used in a postcondition predicate must be const-qualified">;
+def err_contract_constructor_pre_this : Error<
+  "constructor precondition cannot reference 'this'">;
+def err_contract_destructor_post_this : Error<
+  "destructor postcondition cannot reference 'this'">;
+def err_contract_predicate_coroutine : Error<
+  "contract predicate cannot contain %0">;
+def err_contract_predicate_implicit_capture : Error<
+  "contract predicate cannot implicitly capture %0; explicitly capture it in the lambda">;
+def err_contract_violation_support_not_found : Error<
+  "cannot use contract assertions: "
+  "%select{"
+  "namespace 'std::contracts' not found|"
+  "class 'std::contracts::contract_violation' not found|"
+  "enum 'std::contracts::assertion_kind' not found|"
+  "enum 'std::contracts::evaluation_semantic' not found|"
+  "enum 'std::contracts::detection_mode' not found"
+  "}0">;
+def err_builtin_contract_violation_handler_arg : Error<
+  "argument to '__builtin_contract_violation_handler' must be a pointer to "
+  "'const std::contracts::contract_violation'">;
 
 def subst_user_defined_msg : TextSubstitution<
   "%select{the message|the expression}0 in "

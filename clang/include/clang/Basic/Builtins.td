@@ -4875,6 +4875,16 @@ def BuiltinFunctionStart : Builtin {
   let Prototype = "void*(void&)";
 }
 
+// Compiler-internal fallback used when a contract assertion cannot see a
+// declaration of the replaceable ::handle_contract_violation function. The
+// argument is a pointer to const std::contracts::contract_violation; CodeGen
+// lowers this builtin to a call to the corresponding C++ ABI symbol.
+def BuiltinContractViolationHandler : LangBuiltin<"CXX_LANG"> {
+  let Spellings = ["__builtin_contract_violation_handler"];
+  let Attributes = [CustomTypeChecking];
+  let Prototype = "void(void const*)";
+}
+
 def BuiltinOperatorNew : Builtin {
   let Spellings = ["__builtin_operator_new"];
   let Attributes = [Const, CustomTypeChecking, Constexpr];

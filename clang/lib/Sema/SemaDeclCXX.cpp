@@ -4208,7 +4208,7 @@ void Sema::ActOnStartCXXInClassMemberInitializer() {
   PushFunctionScope();
 }
 
-void Sema::ActOnStartTrailingRequiresClause(Scope *S, Declarator &D) {
+void Sema::ActOnStartFunctionDeclaratorTail(Scope *S, Declarator &D) {
   if (!D.isFunctionDeclarator())
     return;
   auto &FTI = D.getFunctionTypeInfo();
@@ -19055,6 +19055,31 @@ void Sema::DiagnoseReturnInConstructorExceptionHandler(CXXTryStmt *TryBlock) {
 
 void Sema::SetFunctionBodyKind(Decl *D, SourceLocation Loc, FnBodyKind BodyKind,
                                StringLiteral *DeletedMessage) {
+  // P2900R14 [dcl.contract.func]p1: Contracts are not allowed on deleted or
+  // defaulted functions.
+  //
+  // Why both ActOnFunctionDeclarator and SetFunctionBodyKind need checks:
+  // - For member functions with = default, the parser sets
+  // FunctionDefinitionKind
+  //   to Defaulted BEFORE calling ActOnFunctionDeclarator, so the check there
+  //   catches them.
+  // - For free functions with = delete or = default, the parser calls
+  //   ActOnFunctionDeclarator FIRST (when FunctionDefinitionKind is still
+  //   Definition), and only sets it to Deleted/Defaulted later when it sees
+  //   the = delete/= default syntax. By that time, contracts have already been
+  //   attached to the FunctionDecl, so we need to check and reject them here.
+  if (FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(D)) {
+    if (FD->hasContracts()) {
+      if (BodyKind == FnBodyKind::Delete) {
+        Diag(FD->getLocation(), diag::err_contracts_on_deleted);
+      } else if (BodyKind == FnBodyKind::Default) {
+        Diag(FD->getLocation(), diag::err_contracts_on_defaulted);
+      }
+      // Clear the contracts to avoid processing them later.
+      FD->setContractAnnotations(nullptr);
+    }
+  }
+
   switch (BodyKind) {
   case FnBodyKind::Delete:
     SetDeclDeleted(D, Loc, DeletedMessage);

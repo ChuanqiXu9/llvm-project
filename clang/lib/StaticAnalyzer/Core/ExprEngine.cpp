@@ -1874,6 +1874,28 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
       // Handled due to fully linearised CFG.
       break;
 
+    case Stmt::ContractAssertStmtClass: {
+      const auto *Contract = cast<ContractAssertStmt>(S);
+      if (getContext().getLangOpts().getContractViolationMode() !=
+          LangOptions::ContractViolationModeKind::Enforce) {
+        // In observe mode the violation handler returns. In ignore mode the
+        // CFG omits evaluation of the predicate. Keep analysis alive here.
+        Dst.insert(Pred);
+        break;
+      }
+
+      SVal Value = Pred->getState()->getSVal(Contract->getCondition(),
+                                             Pred->getStackFrame());
+      auto Constraint = Value.getAs<DefinedOrUnknownSVal>();
+      if (!Constraint) {
+        Dst.insert(Pred);
+        break;
+      }
+      if (ProgramStateRef State = Pred->getState()->assume(*Constraint, true))
+        Dst.insert(Engine.makePostStmtNode(S, State, Pred));
+      break;
+    }
+
     case Stmt::CXXBindTemporaryExprClass: {
       ExplodedNodeSet PreVisit;
       getCheckerManager().runCheckersForPreStmt(PreVisit, Pred, S, *this);

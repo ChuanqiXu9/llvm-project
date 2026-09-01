@@ -24,10 +24,13 @@ struct StructuralEquivalenceTest : ::testing::Test {
   // Parses the source code in the specified language and sets the ASTs of
   // the current test instance to the parse result.
   void makeASTUnits(const std::string &SrcCode0, const std::string &SrcCode1,
-                    TestLanguage Lang) {
+                    TestLanguage Lang,
+                    llvm::ArrayRef<llvm::StringRef> ExtraArgs = {}) {
     this->Code0 = SrcCode0;
     this->Code1 = SrcCode1;
     std::vector<std::string> Args = getCommandLineArgsForTesting(Lang);
+    for (llvm::StringRef Arg : ExtraArgs)
+      Args.push_back(Arg.str());
 
     const char *const InputFileName = "input.cc";
 
@@ -305,6 +308,48 @@ TEST_F(StructuralEquivalenceTest, WrongOrderOfFieldsInClass) {
 
 struct StructuralEquivalenceFunctionTest : StructuralEquivalenceTest {
 };
+
+TEST_F(StructuralEquivalenceFunctionTest, ContractSourceOrder) {
+  makeASTUnits("int foo(int x) pre(x > 0) post(r: r >= 0);",
+               "int foo(int x) post(r: r >= 0) pre(x > 0);", Lang_CXX26,
+               {"-fcontracts", "-fcontract-mode=ignore"});
+  auto Matcher = functionDecl(hasName("foo"));
+  auto *D0 = FirstDeclMatcher<FunctionDecl>().match(
+      AST0->getASTContext().getTranslationUnitDecl(), Matcher);
+  auto *D1 = FirstDeclMatcher<FunctionDecl>().match(
+      AST1->getASTContext().getTranslationUnitDecl(), Matcher);
+  ASSERT_TRUE(D0);
+  ASSERT_TRUE(D1);
+  EXPECT_FALSE(testStructuralMatch(D0, D1));
+}
+
+TEST_F(StructuralEquivalenceFunctionTest, EquivalentContracts) {
+  makeASTUnits("int foo(int x) pre(x > 0) post(r: r >= 0);",
+               "int foo(int y) pre(y > 0) post(result: result >= 0);",
+               Lang_CXX26, {"-fcontracts", "-fcontract-mode=ignore"});
+  auto Matcher = functionDecl(hasName("foo"));
+  auto *D0 = FirstDeclMatcher<FunctionDecl>().match(
+      AST0->getASTContext().getTranslationUnitDecl(), Matcher);
+  auto *D1 = FirstDeclMatcher<FunctionDecl>().match(
+      AST1->getASTContext().getTranslationUnitDecl(), Matcher);
+  ASSERT_TRUE(D0);
+  ASSERT_TRUE(D1);
+  EXPECT_TRUE(testStructuralMatch(D0, D1));
+}
+
+TEST_F(StructuralEquivalenceFunctionTest, ContractParametersArePositional) {
+  makeASTUnits("int foo(int a, int b) pre(a > 0);",
+               "int foo(int b, int a) pre(a > 0);", Lang_CXX26,
+               {"-fcontracts", "-fcontract-mode=ignore"});
+  auto Matcher = functionDecl(hasName("foo"));
+  auto *D0 = FirstDeclMatcher<FunctionDecl>().match(
+      AST0->getASTContext().getTranslationUnitDecl(), Matcher);
+  auto *D1 = FirstDeclMatcher<FunctionDecl>().match(
+      AST1->getASTContext().getTranslationUnitDecl(), Matcher);
+  ASSERT_TRUE(D0);
+  ASSERT_TRUE(D1);
+  EXPECT_FALSE(testStructuralMatch(D0, D1));
+}
 
 TEST_F(StructuralEquivalenceFunctionTest, TemplateVsNonTemplate) {
   auto t = makeNamedDecls("void foo();", "template<class T> void foo();",

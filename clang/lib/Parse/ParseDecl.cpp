@@ -72,6 +72,16 @@ TypeResult Parser::ParseTypeName(SourceRange *Range, DeclaratorContext Context,
   // Parse the abstract-declarator, if present.
   Declarator DeclaratorInfo(DS, ParsedAttributesView::none(), Context);
   ParseDeclarator(DeclaratorInfo);
+
+  // Contracts are not permitted on aliases, but parse far enough to issue the
+  // dedicated diagnostic rather than treating `pre` or `post` as stray input.
+  if (getLangOpts().Contracts && getContractSpecifierKind() &&
+      DeclaratorInfo.hasFunctionTypeChunk() &&
+      (Context == DeclaratorContext::AliasDecl ||
+       Context == DeclaratorContext::AliasTemplate))
+    ParseFunctionDeclaratorTail(DeclaratorInfo,
+                                /*AllowTrailingRequiresClause=*/false);
+
   if (Range)
     *Range = DeclaratorInfo.getSourceRange();
 
@@ -2186,13 +2196,14 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
     while (MaybeParseHLSLAnnotations(D))
       ;
 
-  if (Tok.is(tok::kw_requires)) {
+  if (Tok.is(tok::kw_requires) ||
+      (getLangOpts().Contracts && getContractSpecifierKind())) {
     TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
     // With abbreviated function templates - we need to explicitly add depth to
     // account for the implicit template parameter list induced by the template.
     if (!TemplateInfo.TemplateParams && D.getInventedTemplateParameterList())
       ++CurTemplateDepthTracker;
-    ParseTrailingRequiresClauseWithScope(D);
+    ParseFunctionDeclaratorTail(D);
   }
 
   // Save late-parsed attributes for now; they need to be parsed in the
@@ -2437,12 +2448,14 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       MaybeParseHLSLAnnotations(D);
 
     if (!D.isInvalidType()) {
-      // C++2a [dcl.decl]p1
+      // C++ [dcl.decl]
       //    init-declarator:
-      //	      declarator initializer[opt]
-      //        declarator requires-clause
-      if (Tok.is(tok::kw_requires))
-        ParseTrailingRequiresClauseWithScope(D);
+      //        declarator initializer[opt]
+      //        declarator requires-clause[opt]
+      //          function-contract-specifier-seq[opt]
+      if (Tok.is(tok::kw_requires) ||
+          (getLangOpts().Contracts && getContractSpecifierKind()))
+        ParseFunctionDeclaratorTail(D);
       Decl *ThisDecl = ParseDeclarationAfterDeclarator(D, TemplateInfo);
       D.complete(ThisDecl);
       if (ThisDecl)
@@ -6456,6 +6469,31 @@ static bool isPipeDeclarator(const Declarator &D) {
   return false;
 }
 
+/// ParseDeclaratorInternal - Parse a C or C++ declarator. The direct-declarator
+/// is parsed by the function passed to it. Pass null, and the direct-declarator
+/// isn't parsed at all, making this function effectively parse the C++
+/// ptr-operator production.
+///
+/// If the grammar of this construct is extended, matching changes must also be
+/// made to TryParseDeclarator and MightBeDeclarator, and possibly to
+/// isConstructorDeclarator.
+///
+///       declarator: [C99 6.7.5] [C++ 8p4, dcl.decl]
+/// [C]     pointer[opt] direct-declarator
+/// [C++]   direct-declarator
+/// [C++]   ptr-operator declarator
+///
+///       pointer: [C99 6.7.5]
+///         '*' type-qualifier-list[opt]
+///         '*' type-qualifier-list[opt] pointer
+///
+///       ptr-operator:
+///         '*' cv-qualifier-seq[opt]
+///         '&'
+/// [C++0x] '&&'
+/// [GNU]   '&' restrict[opt] attributes[opt]
+/// [GNU?]  '&&' restrict[opt] attributes[opt]
+///         '::'[opt] nested-name-specifier '*' cv-qualifier-seq[opt]
 void Parser::ParseDeclaratorInternal(Declarator &D,
                                      DirectDeclParseFunction DirectDeclParser) {
   if (Diags.hasAllExtensionsSilenced())
@@ -7287,6 +7325,26 @@ void Parser::InitCXXThisScopeForDeclaratorIfRelevant(
                     IsCXX11MemberFunction);
 }
 
+/// ParseFunctionDeclarator - We are after the identifier and have parsed the
+/// declarator D up to a paren, which indicates that we are parsing function
+/// arguments.
+///
+/// If FirstArgAttrs is non-null, then the caller parsed those attributes
+/// immediately after the open paren - they will be applied to the DeclSpec
+/// of the first parameter.
+///
+/// If RequiresArg is true, then the first argument of the function is required
+/// to be present and required to not be an identifier list.
+///
+/// For C++, after the parameter-list, it also parses the cv-qualifier-seq[opt],
+/// (C++11) ref-qualifier[opt], exception-specification[opt],
+/// (C++11) attribute-specifier-seq[opt], and
+/// (C++11) trailing-return-type[opt].
+///
+/// [C++11] exception-specification:
+///           dynamic-exception-specification
+///           noexcept-specification
+///
 void Parser::ParseFunctionDeclarator(Declarator &D,
                                      ParsedAttributes &FirstArgAttrs,
                                      BalancedDelimiterTracker &Tracker,

@@ -28,6 +28,7 @@
 #include "clang/Sema/SemaSYCL.h"
 #include "clang/Sema/Template.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/SaveAndRestore.h"
 #include <optional>
 using namespace clang;
 using namespace sema;
@@ -1368,7 +1369,8 @@ void Sema::ActOnLambdaExpressionAfterIntroducer(LambdaIntroducer &Intro,
 
     VarDecl *Underlying = Var->getPotentiallyDecomposedVarDecl();
 
-    if (!Underlying->hasLocalStorage()) {
+    if (!Underlying->hasLocalStorage() &&
+        !isContractPredicateResultVar(Underlying)) {
       Diag(C->Loc, diag::err_capture_non_automatic_variable) << C->Id;
       Diag(Var->getLocation(), diag::note_previous_decl) << C->Id;
       continue;
@@ -1425,7 +1427,8 @@ void Sema::ActOnLambdaClosureQualifiers(LambdaIntroducer &Intro,
   // For DR1632, we also allow a capture-default in any context where we can
   // odr-use 'this' (in particular, in a default initializer for a non-static
   // data member).
-  if (Intro.Default != LCD_None &&
+  // A contract assertion scope is also a permitted innermost enclosing scope.
+  if (Intro.Default != LCD_None && !isParsingContractPredicate() &&
       !LSI->Lambda->getParent()
            ->getEnclosingNonExpansionStatementContext()
            ->isFunctionOrMethod() &&
@@ -1513,6 +1516,10 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
       AssociatedConstraint(ParamInfo.getTrailingRequiresClause()), MethodTyInfo,
       ParamInfo.getDeclSpec().getConstexprSpecifier(),
       IsLambdaStatic ? SC_Static : SC_None, Params, ExplicitResultType);
+
+  // P2900R14: Process contract specifiers on lambda call operators.
+  if (ParamInfo.hasContractSpecifiers())
+    ActOnFunctionContractSpecifiers(Method, ParamInfo);
 
   CheckCXXDefaultArguments(Method);
 
@@ -1984,6 +1991,8 @@ ExprResult Sema::BuildCaptureInit(const Capture &Cap,
   // C++ [expr.prim.lambda]p12:
   //   An entity captured by a lambda-expression is odr-used (3.2) in
   //   the scope containing the lambda-expression.
+  llvm::SaveAndRestore<bool> BuildingCaptureInit(
+      BuildingContractPredicateCaptureInit, isParsingContractPredicate());
   ExprResult Init;
   IdentifierInfo *Name = nullptr;
   if (Cap.isThisCapture()) {

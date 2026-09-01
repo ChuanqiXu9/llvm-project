@@ -2385,6 +2385,15 @@ bool RecursiveASTVisitor<Derived>::TraverseFunctionHelper(FunctionDecl *D) {
         const_cast<Expr *>(TrailingRequiresClause.ConstraintExpr)));
   }
 
+  // Function contract annotations are not Stmt or Decl nodes themselves, so
+  // traverse their source-spelled predicates explicitly. Use the direct list
+  // to avoid revisiting inherited contracts on every redeclaration.
+  for (ContractAnnotation *C = D->getDirectContractAnnotations(); C;
+       C = C->getNext()) {
+    if (!C->isInvalid() && C->getPredicate())
+      TRY_TO(TraverseStmt(C->getPredicate()));
+  }
+
   if (CXXConstructorDecl *Ctor = dyn_cast<CXXConstructorDecl>(D)) {
     // Constructor initializers.
     for (auto *I : Ctor->inits()) {
@@ -2584,6 +2593,7 @@ DEF_TRAVERSE_STMT(DeclStmt, {
 // These non-expr stmts (most of them), do not need any action except
 // iterating over the children.
 DEF_TRAVERSE_STMT(BreakStmt, {})
+DEF_TRAVERSE_STMT(ContractAssertStmt, {})
 DEF_TRAVERSE_STMT(CXXTryStmt, {})
 DEF_TRAVERSE_STMT(CaseStmt, {})
 DEF_TRAVERSE_STMT(CompoundStmt, {})

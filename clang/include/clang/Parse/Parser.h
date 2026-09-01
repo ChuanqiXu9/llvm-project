@@ -1285,6 +1285,20 @@ private:
     std::unique_ptr<CachedTokens> Toks;
   };
 
+  /// LateParsedContractSpecifier - Contains cached tokens for a contract
+  /// specifier (pre/post) that cannot be parsed yet because it occurs within
+  /// a member function declaration inside the class, where 'this' and member
+  /// access are not yet available.
+  struct LateParsedContractSpecifier {
+    explicit LateParsedContractSpecifier(Declarator::ContractSpecInfo &&Info)
+        : Info(std::move(Info)) {}
+
+    /// The same parsed-specifier record used by the immediate path. Its token
+    /// stream is consumed when the completed class makes member lookup and
+    /// `this` available.
+    Declarator::ContractSpecInfo Info;
+  };
+
   /// LateParsedMethodDeclaration - A method declaration inside a class that
   /// contains at least one entity whose parsing needs to be delayed
   /// until the class itself is completely-defined, such as a default
@@ -1306,6 +1320,11 @@ private:
     /// method will be stored so that they can be reintroduced into
     /// scope at the appropriate times.
     SmallVector<LateParsedDefaultArgument, 8> DefaultArgs;
+
+    /// ContractSpecifiers - Contains contract specifiers (pre/post) that
+    /// need to be parsed after the class is completely defined, because
+    /// they may reference 'this' or member variables.
+    SmallVector<LateParsedContractSpecifier, 4> ContractSpecifiers;
 
     /// The set of tokens that make up an exception-specification that
     /// has not yet been parsed.
@@ -2747,8 +2766,7 @@ private:
   /// For C++, after the parameter-list, it also parses the
   /// cv-qualifier-seq[opt], (C++11) ref-qualifier[opt],
   /// exception-specification[opt], (C++11) attribute-specifier-seq[opt],
-  /// (C++11) trailing-return-type[opt] and (C++2a) the trailing
-  /// requires-clause.
+  /// and (C++11) trailing-return-type[opt].
   ///
   /// \verbatim
   /// [C++11] exception-specification:
@@ -2762,6 +2780,10 @@ private:
   void InitCXXThisScopeForDeclaratorIfRelevant(
       const Declarator &D, const DeclSpec &DS,
       std::optional<Sema::CXXThisScopeRAII> &ThisScope);
+  /// Parse a function's trailing requires-clause followed by its contract
+  /// specifiers, recreating the prototype scope when necessary.
+  void ParseFunctionDeclaratorTail(Declarator &D,
+                                   bool AllowTrailingRequiresClause = true);
 
   /// ParseRefQualifier - Parses a member function ref-qualifier. Returns
   /// true if a ref-qualifier is found.
@@ -2991,9 +3013,7 @@ private:
   TypeResult ParseTrailingReturnType(SourceRange &Range,
                                      bool MayBeFollowedByDirectInit);
 
-  /// Parse a requires-clause as part of a function declaration.
-  void ParseTrailingRequiresClauseWithScope(Declarator &D);
-  void ParseTrailingRequiresClause(Declarator &D);
+  void ParseTrailingRequiresClause(Declarator &D, const DeclSpec &DS);
 
   void ParseMicrosoftIfExistsClassDeclaration(DeclSpec::TST TagType,
                                               ParsedAttributes &AccessAttrs,
@@ -7597,6 +7617,10 @@ public:
   /// Note: this lets the caller parse the end ';'.
   ///
   StmtResult ParseBreakStatement();
+
+  std::optional<Declarator::ContractSpecInfo::Kind> getContractSpecifierKind();
+  void ParseContractSpecifiers(Declarator &D, ParsedType TrailingReturnType);
+  StmtResult ParseContractAssertStatement();
 
   /// ParseReturnStatement
   /// \verbatim

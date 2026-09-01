@@ -54,6 +54,10 @@
 #include <string>
 #include <utility>
 
+namespace llvm {
+class FoldingSetNodeID;
+}
+
 namespace clang {
 
 class ASTContext;
@@ -2044,6 +2048,83 @@ enum class DefaultedComparisonKind : unsigned char {
   Relational,
 };
 
+/// The ABI values of std::contracts::assertion_kind.
+enum class ContractKind : uint8_t {
+  Precondition = 1,
+  Postcondition = 2,
+  Assertion = 3,
+};
+
+/// The ABI values of std::contracts::evaluation_semantic.
+enum class ContractEvaluationSemantic : uint8_t {
+  Ignore = 1,
+  Observe = 2,
+  Enforce = 3,
+  QuickEnforce = 4,
+};
+
+/// The ABI values of std::contracts::detection_mode.
+enum class ContractDetectionMode : uint8_t {
+  PredicateFalse = 1,
+  EvaluationException = 2,
+};
+
+/// Represents a single C++26 function contract annotation (P2900R14).
+/// Nodes are ASTContext-allocated and form a source-ordered singly-linked list
+/// on FunctionDecl.
+///
+/// \code
+///   int f(int x) post(r: r > 0) pre(x > 0);
+///   //           ^~~~~~~~~~~~~~ ^~~~~~~~~~
+///   //           two ContractAnnotation nodes in source order
+/// \endcode
+class ContractAnnotation {
+  ContractKind Kind;
+  Expr *Predicate;
+  ContractAnnotation *Next = nullptr;
+  SourceLocation KwLoc;
+  SourceLocation LParenLoc, RParenLoc;
+  bool Invalid = false;
+  /// The implicit VarDecl for the return value name in post(name: expr).
+  /// Null for preconditions and unnamed postconditions.
+  VarDecl *ResultVar = nullptr;
+  /// The compiler-generated handler body that constructs a contract_violation
+  /// and calls handle_contract_violation ([basic.contract.eval] p5).
+  Stmt *HandlerBody = nullptr;
+
+public:
+  ContractAnnotation(ContractKind Kind, Expr *Pred, SourceLocation KwLoc,
+                     SourceLocation LP, SourceLocation RP,
+                     VarDecl *RV = nullptr)
+      : Kind(Kind), Predicate(Pred), KwLoc(KwLoc), LParenLoc(LP), RParenLoc(RP),
+        ResultVar(RV) {
+    assert(Kind != ContractKind::Assertion &&
+           "assertions are represented by ContractAssertStmt");
+    assert((Kind == ContractKind::Postcondition || !RV) &&
+           "a precondition cannot have a result variable");
+  }
+
+  ContractKind getKind() const { return Kind; }
+  bool isPrecondition() const { return Kind == ContractKind::Precondition; }
+  bool isPostcondition() const { return Kind == ContractKind::Postcondition; }
+  Expr *getPredicate() const { return Predicate; }
+  void setPredicate(Expr *P) { Predicate = P; }
+  bool isInvalid() const { return Invalid; }
+  void setInvalid(bool I = true) { Invalid = I; }
+  ContractAnnotation *getNext() const { return Next; }
+  void setNext(ContractAnnotation *N) { Next = N; }
+  VarDecl *getResultVar() const { return ResultVar; }
+  void setResultVar(VarDecl *RV) {
+    assert(isPostcondition() && "a precondition cannot have a result variable");
+    ResultVar = RV;
+  }
+  Stmt *getHandlerBody() const { return HandlerBody; }
+  void setHandlerBody(Stmt *S) { HandlerBody = S; }
+  SourceLocation getKeywordLoc() const { return KwLoc; }
+  SourceLocation getLParenLoc() const { return LParenLoc; }
+  SourceLocation getRParenLoc() const { return RParenLoc; }
+};
+
 /// Represents a function declaration or definition.
 ///
 /// Since a given function can be declared several times in a program,
@@ -2217,6 +2298,9 @@ private:
   /// Provides source/type location info for the declaration name embedded in
   /// the DeclaratorDecl base class.
   DeclarationNameLoc DNLoc;
+
+  /// C++26 contract annotations (P2900R14), in source order.
+  ContractAnnotation *ContractAnnotations = nullptr;
 
   /// Specify that this function declaration is actually a function
   /// template specialization.
@@ -2673,6 +2757,31 @@ public:
   }
 
   void setDeletedAsWritten(bool D = true, StringLiteral *Message = nullptr);
+
+  /// \name C++26 Contracts (P2900R14)
+  ///
+  /// Per [dcl.contract.func], contracts are only allowed on the first
+  /// declaration of a function. A redeclaration may repeat identical contracts
+  /// or omit them entirely (inheriting the first declaration's contracts).
+  /// The accessors below fall back to the canonical (first) declaration and
+  /// template pattern so that callers always see the effective contracts
+  /// regardless of which redeclaration or specialization they hold.
+  /// @{
+  bool hasContracts() const;
+  bool hasPreconditions() const;
+  bool hasPostconditions() const;
+  ContractAnnotation *getContractAnnotations() const;
+  void setContractAnnotations(ContractAnnotation *C) {
+    ContractAnnotations = C;
+  }
+
+  /// Get contracts directly on this declaration, without checking
+  /// redeclaration or template-pattern lookup. Used to check if this specific
+  /// declaration has its own contracts.
+  ContractAnnotation *getDirectContractAnnotations() const {
+    return ContractAnnotations;
+  }
+  /// @}
 
   /// Determines whether this function is "main", which is the
   /// entry point into an executable program.

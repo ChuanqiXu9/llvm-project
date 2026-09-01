@@ -569,6 +569,18 @@ public:
 
     if (D->doesThisDeclarationHaveABody())
       Visit(D->getBody());
+
+    // C++26 Contracts: dump function contract annotations in source order.
+    for (auto *C = D->getContractAnnotations(); C; C = C->getNext()) {
+      if (C->isInvalid() || !C->getPredicate())
+        continue;
+      getNodeDelegate().AddChild(C->isPrecondition() ? "pre" : "post", [=] {
+        if (C->isPostcondition())
+          if (auto *RV = C->getResultVar())
+            Visit(RV);
+        Visit(C->getPredicate());
+      });
+    }
   }
 
   void VisitFieldDecl(const FieldDecl *D) {

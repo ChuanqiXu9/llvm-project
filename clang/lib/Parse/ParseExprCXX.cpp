@@ -1358,6 +1358,10 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
       Tok.isRegularKeywordAttribute() ||
       (Tok.is(tok::l_square) && NextToken().is(tok::l_square));
 
+  // Check for C++26 contract specifiers (pre/post)
+  if (getLangOpts().Contracts && getContractSpecifierKind())
+    HasSpecifiers = true;
+
   if (HasSpecifiers && !HasParentheses && !getLangOpts().CPlusPlus23) {
     // It's common to forget that one needs '()' before 'mutable', an
     // attribute specifier, the result type, or the requires clause. Deal with
@@ -1452,8 +1456,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                       TrailingReturnType, TrailingReturnTypeLoc, &DS),
                   std::move(Attributes), DeclEndLoc);
 
-    if (HasParentheses && Tok.is(tok::kw_requires))
-      ParseTrailingRequiresClause(D);
+    ParseFunctionDeclaratorTail(D, HasParentheses);
   }
 
   // Emit a warning if we see a CUDA host/device/global attribute

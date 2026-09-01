@@ -529,6 +529,14 @@ void StmtPrinter::VisitDeferStmt(DeferStmt *Node) {
   PrintControlledStmt(Node->getBody());
 }
 
+void StmtPrinter::VisitContractAssertStmt(ContractAssertStmt *Node) {
+  Indent() << "contract_assert(";
+  PrintExpr(Node->getCondition());
+  OS << ");";
+  if (Policy.IncludeNewlines)
+    OS << NL;
+}
+
 void StmtPrinter::VisitReturnStmt(ReturnStmt *Node) {
   Indent() << "return";
   if (Node->getRetValue()) {

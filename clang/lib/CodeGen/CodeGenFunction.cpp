@@ -28,6 +28,7 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/IgnoreExpr.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
 #include "clang/Basic/Builtins.h"
@@ -57,6 +58,35 @@
 
 using namespace clang;
 using namespace CodeGen;
+
+namespace llvm {
+extern cl::opt<bool> EnableSingleByteCoverage;
+} // namespace llvm
+
+namespace {
+struct EmitPostConditionsCleanup final : EHScopeStack::Cleanup {
+  void Emit(CodeGenFunction &CGF, Flags) override { CGF.EmitPostConditions(); }
+};
+
+class ContractDetectionModeFinder
+    : public RecursiveASTVisitor<ContractDetectionModeFinder> {
+  const OpaqueValueExpr *Result = nullptr;
+
+public:
+  bool VisitOpaqueValueExpr(const OpaqueValueExpr *OVE) {
+    if (!OVE->getSourceExpr() && OVE->getLocation().isInvalid()) {
+      assert(!Result && "multiple contract detection-mode placeholders");
+      Result = OVE;
+    }
+    return true;
+  }
+
+  const OpaqueValueExpr *find(Stmt *HandlerBody) {
+    TraverseStmt(HandlerBody);
+    return Result;
+  }
+};
+} // namespace
 
 /// shouldEmitLifetimeMarkers - Decide whether we need emit the life-time
 /// markers.
@@ -1565,6 +1595,11 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // Emit the standard function prologue.
   StartFunction(GD, ResTy, Fn, FnInfo, Args, Loc, BodyRange.getBegin());
 
+  // Postconditions are a normal cleanup so every return path evaluates them
+  // after body-local cleanups but before parameter cleanups.
+  if (FD->hasPostconditions())
+    EHStack.pushCleanup<EmitPostConditionsCleanup>(NormalCleanup);
+
   // Save parameters for coroutine function.
   if (Body && isa_and_nonnull<CoroutineBodyStmt>(Body))
     llvm::append_range(FnArgs, FD->parameters());
@@ -1575,6 +1610,9 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // trivial empty loop.
   if (checkIfFunctionMustProgress())
     CurFn->addFnAttr(llvm::Attribute::MustProgress);
+
+  if (FD->hasPreconditions())
+    EmitPreConditions();
 
   // Generate the body of the function.
   PGO->assignRegionCounters(GD, CurFn);
@@ -3543,7 +3581,6 @@ CodeGenFunction::EmitPointerAuthAuth(const CGPointerAuthInfo &PointerAuth,
   return EmitPointerAuthCommon(*this, PointerAuth, Pointer,
                                llvm::Intrinsic::ptrauth_auth);
 }
-
 void CodeGenFunction::addInstToCurrentSourceAtom(
     llvm::Instruction *KeyInstruction, llvm::Value *Backup) {
   if (CGDebugInfo *DI = getDebugInfo())
@@ -3572,5 +3609,152 @@ void CodeGenFunction::emitPFPPostCopyUpdates(Address DestPtr, Address SrcPtr,
     auto DestFieldPtr = EmitAddressOfPFPField(DestPtr, Field);
     auto SrcFieldPtr = EmitAddressOfPFPField(SrcPtr, Field);
     Builder.CreateStore(Builder.CreateLoad(SrcFieldPtr), DestFieldPtr);
+  }
+}
+
+/// Emit a contract check per [basic.contract.eval] (P2900R14).
+void CodeGenFunction::EmitContractCheck(Expr *Predicate, Stmt *HandlerBody) {
+  auto Mode = getLangOpts().getContractViolationMode();
+  // "If the semantic [...] is ignore, the predicate [...] is not evaluated"
+  // ([basic.contract.eval] p3).
+  if (Mode == LangOptions::ContractViolationModeKind::Ignore)
+    return;
+
+  // Sema marks a contract invalid when its handler cannot be built. Keep this
+  // guard as error-recovery protection for incomplete or deserialized ASTs;
+  // otherwise release builds would dereference a null detection-mode node.
+  if (!HandlerBody)
+    return;
+
+  const OpaqueValueExpr *DetectionModeExpr =
+      ContractDetectionModeFinder().find(HandlerBody);
+  assert(DetectionModeExpr && "missing contract detection-mode placeholder");
+  if (!DetectionModeExpr)
+    return;
+  auto EmitHandler = [&](ContractDetectionMode DetectionMode) {
+    llvm::Value *Mode =
+        llvm::ConstantInt::get(ConvertType(DetectionModeExpr->getType()),
+                               static_cast<unsigned>(DetectionMode));
+    OpaqueValueMapping ModeMapping(*this, DetectionModeExpr, RValue::get(Mode));
+    EmitStmt(HandlerBody);
+  };
+
+  llvm::BasicBlock *ExceptionBB = nullptr;
+  if (getLangOpts().CXXExceptions) {
+    ExceptionBB = createBasicBlock("contract.exception");
+    EHCatchScope *CatchScope = EHStack.pushCatch(1);
+    CatchScope->setHandler(0, CGM.getCXXABI().getCatchAllTypeInfo(),
+                           ExceptionBB);
+  }
+
+  llvm::Value *Cond = EvaluateExprAsBool(Predicate);
+
+  bool HasExceptionPath = false;
+  if (ExceptionBB) {
+    EHCatchScope &CatchScope = cast<EHCatchScope>(*EHStack.begin());
+    if (CatchScope.hasEHBranches()) {
+      HasExceptionPath = true;
+      popCatchScope();
+    } else {
+      CatchScope.clearHandlerBlocks();
+      EHStack.popCatch();
+      ExceptionBB = nullptr;
+    }
+  }
+
+  llvm::BasicBlock *ContBB = createBasicBlock("contract.cont");
+  llvm::BasicBlock *HandlerBB = createBasicBlock("contract.handler");
+  Builder.CreateCondBr(Cond, ContBB, HandlerBB);
+  EmitBlock(HandlerBB);
+
+  EmitHandler(ContractDetectionMode::PredicateFalse);
+
+  auto EmitContinuation = [&] {
+    if (Mode == LangOptions::ContractViolationModeKind::Enforce) {
+      // "the program is terminated" ([basic.contract.eval] p5).
+      llvm::FunctionType *FTy = llvm::FunctionType::get(VoidTy, false);
+      llvm::FunctionCallee AbortFn = CGM.CreateRuntimeFunction(FTy, "abort");
+      llvm::CallInst *Call = EmitRuntimeCall(AbortFn);
+      Call->setDoesNotReturn();
+      Builder.CreateUnreachable();
+    } else {
+      assert(Mode == LangOptions::ContractViolationModeKind::Observe &&
+             "Unknown contract violation mode");
+      // "execution continues normally" ([basic.contract.eval] p5).
+      Builder.CreateBr(ContBB);
+    }
+  };
+
+  EmitContinuation();
+
+  if (HasExceptionPath) {
+    llvm::SaveAndRestore<llvm::Instruction *> RestoreCurrentFuncletPad(
+        CurrentFuncletPad);
+    EmitBlockAfterUses(ExceptionBB);
+
+    RunCleanupsScope CatchCleanups(*this);
+    NullStmt Empty{SourceLocation()};
+    CXXCatchStmt Catch(SourceLocation(), /*ExceptionDecl=*/nullptr, &Empty);
+    CGM.getCXXABI().emitBeginCatch(*this, &Catch);
+
+    EmitHandler(ContractDetectionMode::EvaluationException);
+    CatchCleanups.ForceCleanup();
+    EmitContinuation();
+  }
+
+  EmitBlock(ContBB);
+}
+
+void CodeGenFunction::MapContractParameterAddresses(const FunctionDecl *FD) {
+  // A contract predicate can retain references to parameters on a prior
+  // declaration. Make those declarations aliases of the parameters whose
+  // addresses were emitted for this definition.
+  auto MapFrom = [&](const FunctionDecl *From) {
+    if (!From || From == FD || From->getNumParams() != FD->getNumParams())
+      return;
+
+    for (unsigned I = 0; I != FD->getNumParams(); ++I) {
+      const ParmVarDecl *FromParam = From->getParamDecl(I);
+      if (!LocalDeclMap.count(FromParam))
+        setAddrOfLocalVar(FromParam, GetAddrOfLocalVar(FD->getParamDecl(I)));
+    }
+  };
+
+  MapFrom(FD->getCanonicalDecl());
+}
+
+void CodeGenFunction::EmitPreConditions() {
+  const auto *FD = cast<FunctionDecl>(CurCodeDecl);
+  MapContractParameterAddresses(FD);
+
+  for (auto *Pre = FD->getContractAnnotations(); Pre; Pre = Pre->getNext()) {
+    if (!Pre->isPrecondition() || Pre->isInvalid() || !Pre->getPredicate())
+      continue;
+    EmitContractCheck(Pre->getPredicate(), Pre->getHandlerBody());
+  }
+}
+
+void CodeGenFunction::EmitPostConditions() {
+  const auto *FD = cast<FunctionDecl>(CurCodeDecl);
+  MapContractParameterAddresses(FD);
+
+  for (auto *Post = FD->getContractAnnotations(); Post;
+       Post = Post->getNext()) {
+    if (!Post->isPostcondition() || Post->isInvalid() || !Post->getPredicate())
+      continue;
+    if (VarDecl *RV = Post->getResultVar()) {
+      if (FD->getReturnType()->isReferenceType()) {
+        // The result binding for a reference return has the referred-to type,
+        // not a reference type. ReturnValue is the address of the ABI return
+        // slot containing the referred-to object's address, so load that
+        // address before mapping the result binding.
+        LValue RefLValue = MakeAddrLValue(ReturnValue, FD->getReturnType());
+        setAddrOfLocalVar(RV, EmitLoadOfReference(RefLValue));
+      } else {
+        setAddrOfLocalVar(RV, ReturnValue);
+      }
+    }
+
+    EmitContractCheck(Post->getPredicate(), Post->getHandlerBody());
   }
 }

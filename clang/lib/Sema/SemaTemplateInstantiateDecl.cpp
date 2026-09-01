@@ -2944,6 +2944,154 @@ static QualType adjustFunctionTypeForInstantiation(ASTContext &Context,
                                  NewFunc->getParamTypes(), NewEPI);
 }
 
+bool TemplateDeclInstantiator::MapFunctionContractParameters(
+    const FunctionDecl *Pattern, FunctionDecl *Instantiation,
+    LocalInstantiationScope &Scope) {
+  auto MapParameter = [&](ParmVarDecl *PatternParam,
+                          ParmVarDecl *InstantiationParam) {
+    // Contract instantiation uses a nested scope so result variables do not
+    // leak into the surrounding body or lambda instantiation. Reuse an outer
+    // parameter mapping when one is already available there.
+    if (auto *Existing = Scope.getInstantiationOfIfExists(PatternParam)) {
+      auto *ExistingDecl = dyn_cast<Decl *>(*Existing);
+      return ExistingDecl == InstantiationParam;
+    }
+    Scope.InstantiatedLocal(PatternParam, InstantiationParam);
+    return true;
+  };
+
+  unsigned InstantiationParamIndex = 0;
+  for (ParmVarDecl *PatternParam : Pattern->parameters()) {
+    if (!PatternParam->isParameterPack()) {
+      if (InstantiationParamIndex >= Instantiation->getNumParams())
+        return false;
+      if (!MapParameter(
+              PatternParam,
+              Instantiation->getParamDecl(InstantiationParamIndex++)))
+        return false;
+      continue;
+    }
+
+    UnsignedOrNone NumArgumentsInExpansion =
+        SemaRef.getNumArgumentsInExpansion(PatternParam->getType(),
+                                           TemplateArgs);
+    if (!NumArgumentsInExpansion) {
+      if (InstantiationParamIndex >= Instantiation->getNumParams())
+        return false;
+      if (!MapParameter(
+              PatternParam,
+              Instantiation->getParamDecl(InstantiationParamIndex++)))
+        return false;
+      continue;
+    }
+
+    Scope.MakeInstantiatedLocalArgPack(PatternParam);
+    if (InstantiationParamIndex + *NumArgumentsInExpansion >
+        Instantiation->getNumParams())
+      return false;
+    for (unsigned I = 0; I != *NumArgumentsInExpansion; ++I)
+      Scope.InstantiatedLocalPackArg(
+          PatternParam, Instantiation->getParamDecl(InstantiationParamIndex++));
+  }
+  return InstantiationParamIndex == Instantiation->getNumParams();
+}
+
+ContractAnnotation *
+TemplateDeclInstantiator::InstantiateFunctionContractAnnotations(
+    const FunctionDecl *Pattern, FunctionDecl *Instantiation) {
+  ContractAnnotation *Head = nullptr, *Tail = nullptr;
+  for (auto *C = Pattern->getContractAnnotations(); C; C = C->getNext()) {
+    if (C->isInvalid() || !C->getPredicate())
+      continue;
+    EnterExpressionEvaluationContext Evaluated(
+        SemaRef, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+    VarDecl *NewRV = nullptr;
+    if (VarDecl *OldRV = C->getResultVar())
+      if (!(NewRV = SemaRef.CreateContractResultVarForInstantiation(
+                Instantiation, OldRV)))
+        continue;
+    ExprResult Pred;
+    {
+      Sema::ContractPredicateEvaluationRAII ContractPredicateContext(SemaRef,
+                                                                     NewRV);
+      Pred = SemaRef.SubstExpr(C->getPredicate(), TemplateArgs);
+    }
+    if (Pred.isInvalid())
+      continue;
+    Pred = SemaRef.ActOnFinishContractPredicate(Pred.get(), C->getKeywordLoc());
+    if (Pred.isInvalid())
+      continue;
+    auto *Ann = new (SemaRef.Context)
+        ContractAnnotation(C->getKind(), Pred.get(), C->getKeywordLoc(),
+                           C->getLParenLoc(), C->getRParenLoc(), NewRV);
+    Ann->setHandlerBody(InstantiateContractHandlerBody(C->getHandlerBody()));
+    if (Tail)
+      Tail->setNext(Ann);
+    else
+      Head = Ann;
+    Tail = Ann;
+  }
+  return Head;
+}
+
+Stmt *TemplateDeclInstantiator::InstantiateContractHandlerBody(Stmt *Pattern) {
+  if (!Pattern)
+    return nullptr;
+  StmtResult Result = SemaRef.SubstStmt(Pattern, TemplateArgs);
+  return Result.isInvalid() ? nullptr : Result.get();
+}
+
+void TemplateDeclInstantiator::InstantiateFunctionContracts(
+    const FunctionDecl *Pattern, FunctionDecl *Instantiation) {
+  if (!Pattern || !Instantiation || !Pattern->hasContracts())
+    return;
+
+  // Contract predicates belong to the instantiated function. For ordinary
+  // functions, use a synthetic function scope so they cannot affect a lambda
+  // active at the point of instantiation. A lambda call operator already has
+  // a LambdaScopeInfo established by its instantiation path; keep that scope
+  // active so references to its explicit captures are rebuilt correctly.
+  LocalInstantiationScope Scope(SemaRef, /*CombineWithOuterScope=*/true);
+  unsigned SavedFunctionScopesStart = SemaRef.FunctionScopesStart;
+  Sema::ContextRAII SavedContext(SemaRef, Instantiation);
+  std::optional<Sema::FunctionScopeRAII> FunctionScope;
+  std::optional<Sema::LambdaScopeForCallOperatorInstantiationRAII>
+      LambdaScope;
+  if (isLambdaCallOperator(Instantiation)) {
+    auto *ActiveLSI = SemaRef.FunctionScopes.empty()
+                          ? nullptr
+                          : dyn_cast<LambdaScopeInfo>(
+                                SemaRef.FunctionScopes.back());
+    if (ActiveLSI && (ActiveLSI->CallOperator == Pattern ||
+                      ActiveLSI->CallOperator == Instantiation)) {
+      // ContextRAII normally hides scopes belonging to its previous context,
+      // but this LambdaScopeInfo already belongs to the call operator whose
+      // contracts are being rebuilt.
+      SemaRef.FunctionScopesStart = SavedFunctionScopesStart;
+    } else {
+      // Lazy function-definition instantiation can arrive without an active
+      // lambda scope. Rebuild it here; parameter and capture mappings already
+      // live in the surrounding LocalInstantiationScope.
+      LambdaScope.emplace(SemaRef, Instantiation, TemplateArgs, Scope,
+                          /*ShouldAddDeclsFromParentScope=*/false);
+    }
+  } else {
+    SemaRef.PushFunctionScope();
+    FunctionScope.emplace(SemaRef);
+  }
+  if (!MapFunctionContractParameters(Pattern, Instantiation, Scope)) {
+    Instantiation->setInvalidDecl();
+    return;
+  }
+
+  EnterExpressionEvaluationContext Evaluated(
+      SemaRef, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+  Instantiation->setContractAnnotations(
+      InstantiateFunctionContractAnnotations(Pattern, Instantiation));
+  if (!Instantiation->isDependentContext())
+    SemaRef.BuildFunctionContractHandlers(Instantiation);
+}
+
 /// Normal class members are of more specific types and therefore
 /// don't make it here.  This function serves three purposes:
 ///   1) instantiating function templates
@@ -3337,6 +3485,9 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(
   if (Function->isOverloadedOperator() && !DC->isRecord() &&
       PrincipalDecl->isInIdentifierNamespace(Decl::IDNS_Ordinary))
     PrincipalDecl->setNonMemberOperator();
+
+  if (D->hasContracts() && !isa<CXXRecordDecl>(Owner))
+    InstantiateFunctionContracts(D, Function);
 
   return Function;
 }
@@ -3778,6 +3929,9 @@ Decl *TemplateDeclInstantiator::VisitCXXMethodDecl(
       SemaRef.MarkFunctionReferenced(Loc, Method);
     }
   }
+
+  if (D->hasContracts() && !isa<CXXRecordDecl>(Owner))
+    InstantiateFunctionContracts(D, Method);
 
   return Method;
 }
@@ -5897,8 +6051,38 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
   const FunctionDecl *ExistingDefn = nullptr;
   if (Function->isDefined(ExistingDefn,
                           /*CheckForPendingFriendDefinition=*/true)) {
-    if (ExistingDefn->isThisDeclarationADefinition())
+    if (ExistingDefn->isThisDeclarationADefinition()) {
+      FunctionDecl *Definition = const_cast<FunctionDecl *>(ExistingDefn);
+
+      // An imported class-template member can already have an instantiated
+      // body while its contracts still come from the dependent pattern. Make
+      // the contracts direct on the specialization before CodeGen sees it.
+      // This remains lazy because we only get here once the function
+      // definition itself has been requested.
+      if (!Definition->getDirectContractAnnotations()) {
+        FunctionDecl *PatternDecl =
+            Definition->getTemplateInstantiationPattern();
+        if (PatternDecl && PatternDecl->hasContracts()) {
+          DeclContext *DC = Definition->getLexicalDeclContext();
+          std::optional<ArrayRef<TemplateArgument>> Innermost;
+          if (auto *Primary = Definition->getPrimaryTemplate();
+              Primary &&
+              !isGenericLambdaCallOperatorOrStaticInvokerSpecialization(
+                  Definition)) {
+            Innermost.emplace(
+                Definition->getTemplateSpecializationArgs()->asArray());
+          }
+          MultiLevelTemplateArgumentList TemplateArgs =
+              getTemplateInstantiationArgs(
+                  Definition, DC, /*Final=*/false, Innermost,
+                  /*RelativeToPrimary=*/false, PatternDecl);
+          TemplateDeclInstantiator Instantiator(
+              *this, Definition->getDeclContext(), TemplateArgs);
+          Instantiator.InstantiateFunctionContracts(PatternDecl, Definition);
+        }
+      }
       return;
+    }
 
     // If we're asked to instantiate a function whose body comes from an
     // instantiated friend declaration, attach the instantiated body to the
@@ -6268,6 +6452,19 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     if (addInstantiatedParametersToScope(Function, PatternDecl, Scope,
                                          TemplateArgs))
       return;
+
+    // Use the same contract instantiation path as declaration substitution and
+    // imported definitions. Keeping parameter/result mapping, predicate
+    // substitution, and handler construction in one place avoids subtle
+    // differences between a locally instantiated function and one read from a
+    // BMI.
+    if (PatternDecl->hasContracts() && !Function->isInvalidDecl() &&
+        Function->getTemplateSpecializationKind() !=
+            TSK_ExplicitSpecialization) {
+      TemplateDeclInstantiator ContractInstantiator(
+          *this, Function->getDeclContext(), TemplateArgs);
+      ContractInstantiator.InstantiateFunctionContracts(PatternDecl, Function);
+    }
 
     StmtResult Body;
     if (PatternDecl->hasSkippedBody()) {

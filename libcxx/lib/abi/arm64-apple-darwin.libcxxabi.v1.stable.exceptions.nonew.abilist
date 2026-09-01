@@ -364,6 +364,7 @@
 {'is_defined': False, 'name': '___cxa_vec_new3', 'type': 'U'}
 {'is_defined': False, 'name': '___dynamic_cast', 'type': 'U'}
 {'is_defined': False, 'name': '___gxx_personality_v0', 'type': 'U'}
+{'is_defined': True, 'name': '__Z25handle_contract_violationRKNSt3__19contracts18contract_violationE', 'type': 'FUNC'}
 {'is_defined': True, 'name': '__ZNKSt10bad_typeid4whatEv', 'type': 'I'}
 {'is_defined': True, 'name': '__ZNKSt11logic_error4whatEv', 'type': 'I'}
 {'is_defined': True, 'name': '__ZNKSt12bad_any_cast4whatEv', 'type': 'FUNC'}
@@ -1929,6 +1930,7 @@
 {'is_defined': True, 'name': '__ZNSt3__19basic_iosIwNS_11char_traitsIwEEED0Ev', 'type': 'FUNC'}
 {'is_defined': True, 'name': '__ZNSt3__19basic_iosIwNS_11char_traitsIwEEED1Ev', 'type': 'FUNC'}
 {'is_defined': True, 'name': '__ZNSt3__19basic_iosIwNS_11char_traitsIwEEED2Ev', 'type': 'FUNC'}
+{'is_defined': True, 'name': '__ZNSt3__19contracts41invoke_default_contract_violation_handlerERKNS0_18contract_violationE', 'type': 'FUNC'}
 {'is_defined': True, 'name': '__ZNSt3__19money_getIcNS_19istreambuf_iteratorIcNS_11char_traitsIcEEEEE2idE', 'size': 0, 'type': 'OBJECT'}
 {'is_defined': True, 'name': '__ZNSt3__19money_getIcNS_19istreambuf_iteratorIcNS_11char_traitsIcEEEEE8__do_getERS4_S4_bRKNS_6localeEjRjRbRKNS_5ctypeIcEERNS_10unique_ptrIcPFvPvEEERPcSM_', 'type': 'FUNC'}
 {'is_defined': True, 'name': '__ZNSt3__19money_getIwNS_19istreambuf_iteratorIwNS_11char_traitsIwEEEEE2idE', 'size': 0, 'type': 'OBJECT'}

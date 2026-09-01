@@ -288,6 +288,10 @@
 #    error "__cpp_lib_containers_ranges should not be defined before c++23"
 #  endif
 
+#  ifdef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should not be defined before c++26"
+#  endif
+
 #  ifdef __cpp_lib_copyable_function
 #    error "__cpp_lib_copyable_function should not be defined before c++26"
 #  endif
@@ -1270,6 +1274,10 @@
 
 #  ifdef __cpp_lib_containers_ranges
 #    error "__cpp_lib_containers_ranges should not be defined before c++23"
+#  endif
+
+#  ifdef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should not be defined before c++26"
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -2362,6 +2370,10 @@
 
 #  ifdef __cpp_lib_containers_ranges
 #    error "__cpp_lib_containers_ranges should not be defined before c++23"
+#  endif
+
+#  ifdef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should not be defined before c++26"
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -3715,6 +3727,10 @@
 
 #  ifdef __cpp_lib_containers_ranges
 #    error "__cpp_lib_containers_ranges should not be defined before c++23"
+#  endif
+
+#  ifdef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should not be defined before c++26"
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -5269,6 +5285,10 @@
 #  endif
 #  if __cpp_lib_containers_ranges != 202202L
 #    error "__cpp_lib_containers_ranges should have the value 202202L in c++23"
+#  endif
+
+#  ifdef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should not be defined before c++26"
 #  endif
 
 #  ifdef __cpp_lib_copyable_function
@@ -7063,6 +7083,13 @@
 #  endif
 #  if __cpp_lib_containers_ranges != 202202L
 #    error "__cpp_lib_containers_ranges should have the value 202202L in c++26"
+#  endif
+
+#  ifndef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should be defined in c++26"
+#  endif
+#  if __cpp_lib_contracts != 202502L
+#    error "__cpp_lib_contracts should have the value 202502L in c++26"
 #  endif
 
 #  if !defined(_LIBCPP_VERSION)
@@ -9136,6 +9163,13 @@
 #  endif
 #  if __cpp_lib_containers_ranges != 202202L
 #    error "__cpp_lib_containers_ranges should have the value 202202L in c++29"
+#  endif
+
+#  ifndef __cpp_lib_contracts
+#    error "__cpp_lib_contracts should be defined in c++29"
+#  endif
+#  if __cpp_lib_contracts != 202502L
+#    error "__cpp_lib_contracts should have the value 202502L in c++29"
 #  endif
 
 #  if !defined(_LIBCPP_VERSION)

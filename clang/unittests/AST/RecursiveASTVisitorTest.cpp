@@ -158,6 +158,25 @@ __attribute__((annotate("something"))) int foo() { return 10; }
                           VisitEvent::EndTraverseFunction));
 }
 
+TEST(RecursiveASTVisitorTest, FunctionContractPredicates) {
+  class LiteralVisitor : public RecursiveASTVisitor<LiteralVisitor> {
+  public:
+    bool VisitIntegerLiteral(IntegerLiteral *Literal) {
+      Values.push_back(Literal->getValue().getZExtValue());
+      return true;
+    }
+
+    std::vector<uint64_t> Values;
+  } Visitor;
+
+  ASSERT_TRUE(clang::tooling::runToolOnCodeWithArgs(
+      std::make_unique<ProcessASTAction>(
+          [&](clang::ASTContext &Ctx) { Visitor.TraverseAST(Ctx); }),
+      "int f() pre(7) post(9);",
+      {"-std=c++2c", "-fcontracts", "-fcontract-mode=ignore"}));
+  EXPECT_THAT(Visitor.Values, ElementsAre(7, 9));
+}
+
 TEST(RecursiveASTVisitorTest, EnumDeclWithBase) {
   // Check enum and its integer base is visited.
   llvm::StringRef Code = R"cpp(

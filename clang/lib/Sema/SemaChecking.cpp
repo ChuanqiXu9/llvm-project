@@ -3522,6 +3522,23 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     if (BuiltinAddressof(*this, TheCall))
       return ExprError();
     break;
+  case Builtin::BI__builtin_contract_violation_handler: {
+    if (checkArgCount(TheCall, 1))
+      return ExprError();
+    const auto *PtrTy = TheCall->getArg(0)->getType()->getAs<PointerType>();
+    if (!PtrTy || !PtrTy->getPointeeType().isConstQualified() ||
+        LookupContractViolationSupport(TheCall->getExprLoc()) !=
+            ContractViolationLookupFailure::None ||
+        !Context.hasSameUnqualifiedType(
+            PtrTy->getPointeeType(),
+            Context.getTypeDeclType(
+                static_cast<const TypeDecl *>(StdContractViolationDecl)))) {
+      Diag(TheCall->getArg(0)->getExprLoc(),
+           diag::err_builtin_contract_violation_handler_arg);
+      return ExprError();
+    }
+    break;
+  }
   case Builtin::BI__builtin_function_start:
     if (BuiltinFunctionStart(*this, TheCall))
       return ExprError();
@@ -4434,6 +4451,24 @@ void Sema::CheckArgAlignment(SourceLocation Loc, NamedDecl *FDecl,
 
   // Remove reference or pointer
   ParamTy = ParamTy->getPointeeType();
+
+  // A named postcondition result can temporarily have a dependent type until
+  // the surrounding function declarator or deduced return type is complete.
+  // Lambdas that capture it consequently have a transient dependent capture
+  // field even in a non-dependent context. Their closure is rebuilt once the
+  // result type is known, so do not request its record layout while parsing
+  // the provisional predicate.
+  auto IsProvisionalContractLambda = [](QualType Ty) {
+    const auto *RT = Ty.getNonReferenceType()->getAs<RecordType>();
+    if (!RT || !RT->getDecl()->isLambda())
+      return false;
+    return llvm::any_of(RT->getDecl()->fields(), [](const FieldDecl *Field) {
+      return Field->getType()->isDependentType();
+    });
+  };
+  if (isParsingContractPredicate() && (IsProvisionalContractLambda(ArgTy) ||
+                                       IsProvisionalContractLambda(ParamTy)))
+    return;
 
   // Find expected alignment, and the actual alignment of the passed object.
   // getTypeAlignInChars requires complete types

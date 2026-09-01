@@ -8810,6 +8810,23 @@ StmtResult TreeTransform<Derived>::TransformDeferStmt(DeferStmt *S) {
   return DeferStmt::Create(getSema().Context, S->getDeferLoc(), Result.get());
 }
 
+template <typename Derived>
+StmtResult
+TreeTransform<Derived>::TransformContractAssertStmt(ContractAssertStmt *S) {
+  ExprResult Cond = getDerived().TransformExpr(S->getCondition());
+  if (Cond.isInvalid())
+    return StmtError();
+  if (!getDerived().AlwaysRebuild() && Cond.get() == S->getCondition())
+    // A contract_assert in a dependent function has no handler body until the
+    // function is instantiated. Its predicate need not itself be dependent,
+    // so an unchanged predicate is not sufficient reason to reuse the old
+    // statement once transformation has entered a non-dependent context.
+    if (S->getHandlerBody() || SemaRef.CurContext->isDependentContext())
+      return S;
+  return getSema().ActOnContractAssert(S->getContractAssertLoc(), Cond.get(),
+                                       S->getLParenLoc(), S->getRParenLoc());
+}
+
 template<typename Derived>
 StmtResult
 TreeTransform<Derived>::TransformReturnStmt(ReturnStmt *S) {

@@ -443,6 +443,11 @@ LANGOPT(PaddingOnUnsignedFixedPoint, 1, 0, NotCompatible,
         "unsigned fixed point types having one extra padding bit")
 
 LANGOPT(OverflowBehaviorTypes, 1, 0, NotCompatible, "overflow behavior types")
+LANGOPT(Contracts, 1, 0, NotCompatible, "C++ contracts support")
+ENUM_LANGOPT(ContractViolationMode, ContractViolationModeKind, 2,
+             ContractViolationModeKind::Enforce,
+             NotCompatible,
+             "C++ contract violation handling mode")
 
 ENUM_LANGOPT(RegisterStaticDestructors, RegisterStaticDestructorsKind, 2,
              RegisterStaticDestructorsKind::All, NotCompatible,

@@ -590,7 +590,7 @@ enum class TemplateSubstitutionKind : char {
     Sema::ArgPackSubstIndexRAII SubstIndex;
     DeclContext *Owner;
     const MultiLevelTemplateArgumentList &TemplateArgs;
-    Sema::LateInstantiatedAttrVec* LateAttrs = nullptr;
+    Sema::LateInstantiatedAttrVec *LateAttrs = nullptr;
     LocalInstantiationScope *StartingScope = nullptr;
     // Whether to evaluate the C++20 constraints or simply substitute into them.
     bool EvaluateConstraints = true;
@@ -680,6 +680,16 @@ enum class TemplateSubstitutionKind : char {
       LateAttrs = LA;
       StartingScope = SemaRef.CurrentInstantiationScope;
     }
+
+    void InstantiateFunctionContracts(const FunctionDecl *Pattern,
+                                      FunctionDecl *Instantiation);
+    bool MapFunctionContractParameters(const FunctionDecl *Pattern,
+                                       FunctionDecl *Instantiation,
+                                       LocalInstantiationScope &Scope);
+    ContractAnnotation *
+    InstantiateFunctionContractAnnotations(const FunctionDecl *Pattern,
+                                           FunctionDecl *Instantiation);
+    Stmt *InstantiateContractHandlerBody(Stmt *Pattern);
 
     // Disable late instantiation of attributes.
     void disableLateAttributeInstantiation() {

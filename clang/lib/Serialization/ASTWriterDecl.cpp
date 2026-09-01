@@ -929,6 +929,25 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   Record.push_back(D->param_size());
   for (auto *P : D->parameters())
     Record.AddDeclRef(P);
+
+  // C++26 Contracts (P2900R14)
+  {
+    unsigned NumContracts = 0;
+    for (auto *C = D->getDirectContractAnnotations(); C; C = C->getNext())
+      ++NumContracts;
+    Record.push_back(NumContracts);
+    for (auto *C = D->getDirectContractAnnotations(); C; C = C->getNext()) {
+      Record.push_back(static_cast<unsigned>(C->getKind()));
+      Record.push_back(C->isInvalid());
+      Record.AddStmt(C->getPredicate());
+      Record.AddSourceLocation(C->getKeywordLoc());
+      Record.AddSourceLocation(C->getLParenLoc());
+      Record.AddSourceLocation(C->getRParenLoc());
+      Record.AddDeclRef(C->getResultVar());
+      Record.AddStmt(C->getHandlerBody());
+    }
+  }
+
   Code = serialization::DECL_FUNCTION;
 }
 

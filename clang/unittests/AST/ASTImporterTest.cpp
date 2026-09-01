@@ -37,6 +37,16 @@ struct ImportType : TestImportBase {};
 struct ImportDecl : TestImportBase {};
 struct ImportFixedPointExpr : ImportExpr {};
 
+struct ImportContracts : ASTImporterOptionSpecificTestBase {
+protected:
+  std::vector<std::string> getExtraArgs() const override {
+    auto Args = GetParam();
+    Args.push_back("-fcontracts");
+    Args.push_back("-fcontract-mode=ignore");
+    return Args;
+  }
+};
+
 struct CanonicalRedeclChain : ASTImporterOptionSpecificTestBase {};
 
 TEST_P(CanonicalRedeclChain, ShouldBeConsequentWithMatchers) {
@@ -923,6 +933,35 @@ TEST_P(ASTImporterOptionSpecificTestBase, ImportRecordTypeInFunc) {
   auto ToType =
       ImportType(FromVar->getType().getCanonicalType(), FromVar, Lang_C99);
   EXPECT_FALSE(ToType.isNull());
+}
+
+TEST_P(ImportContracts, ImportFunctionContractsInSourceOrder) {
+  Decl *FromTU = getTuDecl("int declToImport(const int x) "
+                           "post(result: result >= x) pre(x > 0) { "
+                           "  contract_assert(x != 42); return x; "
+                           "}",
+                           Lang_CXX26);
+  auto *From = FirstDeclMatcher<FunctionDecl>().match(
+      FromTU, functionDecl(hasName("declToImport")));
+  ASSERT_TRUE(From);
+
+  auto *To = Import(From, Lang_CXX26);
+  ASSERT_TRUE(To);
+  auto *Contract = To->getDirectContractAnnotations();
+  ASSERT_TRUE(Contract);
+  EXPECT_EQ(Contract->getKind(), ContractKind::Postcondition);
+  EXPECT_TRUE(Contract->getPredicate());
+  EXPECT_TRUE(Contract->getResultVar());
+  Contract = Contract->getNext();
+  ASSERT_TRUE(Contract);
+  EXPECT_EQ(Contract->getKind(), ContractKind::Precondition);
+  EXPECT_TRUE(Contract->getPredicate());
+  EXPECT_FALSE(Contract->getResultVar());
+  EXPECT_FALSE(Contract->getNext());
+
+  auto *Body = cast<CompoundStmt>(To->getBody());
+  ASSERT_FALSE(Body->body_empty());
+  EXPECT_TRUE(isa<ContractAssertStmt>(*Body->body_begin()));
 }
 
 TEST_P(ASTImporterOptionSpecificTestBase, ImportRecordDeclInFuncParams) {
@@ -10839,6 +10878,9 @@ INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ImportFixedPointExpr,
                          ExtendWithOptions(DefaultTestArrayForRunOptions,
                                            std::vector<std::string>{
                                                "-ffixed-point"}));
+
+INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ImportContracts,
+                         DefaultTestValuesForRunOptions);
 
 INSTANTIATE_TEST_SUITE_P(ParameterizedTests, ImportBlock,
                          ExtendWithOptions(DefaultTestArrayForRunOptions,

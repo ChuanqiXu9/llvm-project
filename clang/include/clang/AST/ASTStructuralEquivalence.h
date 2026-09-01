@@ -57,6 +57,11 @@ struct StructuralEquivalenceContext {
   // (are in or were once in \c DeclsToCheck) of a starting Decl pair.
   llvm::DenseSet<std::pair<Decl *, Decl *>> VisitedDecls;
 
+  // Bidirectional declaration mappings whose identity is determined by their
+  // position in the surrounding declaration rather than by their spelling.
+  llvm::DenseMap<Decl *, Decl *> MappedDecls;
+  llvm::DenseMap<Decl *, Decl *> ReverseMappedDecls;
+
   /// Declaration (from, to) pairs that are known not to be equivalent
   /// (which we have already complained about).
   NonEquivalentDeclSet &NonEquivalentDecls;

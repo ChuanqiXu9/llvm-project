@@ -37,6 +37,7 @@ class CodeGenOptions;
 class CoverageSourceInfo;
 class Decl;
 class DiagnosticsEngine;
+class FunctionDecl;
 class GlobalDecl;
 class HeaderSearchOptions;
 class LangOptions;

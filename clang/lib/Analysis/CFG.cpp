@@ -590,6 +590,8 @@ private:
   CFGBlock *VisitCaseStmt(CaseStmt *C);
   CFGBlock *VisitChooseExpr(ChooseExpr *C, AddStmtChoice asc);
   CFGBlock *VisitCompoundStmt(CompoundStmt *C, bool ExternallyDestructed);
+  CFGBlock *VisitContractAssertStmt(ContractAssertStmt *S,
+                                    AddStmtChoice asc);
   CFGBlock *VisitConditionalOperator(AbstractConditionalOperator *C,
                                      AddStmtChoice asc);
   CFGBlock *VisitContinueStmt(ContinueStmt *C);
@@ -2391,6 +2393,9 @@ CFGBlock *CFGBuilder::Visit(Stmt * S, AddStmtChoice asc,
     case Stmt::CompoundStmtClass:
       return VisitCompoundStmt(cast<CompoundStmt>(S), ExternallyDestructed);
 
+    case Stmt::ContractAssertStmtClass:
+      return VisitContractAssertStmt(cast<ContractAssertStmt>(S), asc);
+
     case Stmt::ConditionalOperatorClass:
       return VisitConditionalOperator(cast<ConditionalOperator>(S), asc);
 
@@ -2567,6 +2572,21 @@ CFGBlock *CFGBuilder::VisitStmt(Stmt *S, AddStmtChoice asc) {
   }
 
   return VisitChildren(S);
+}
+
+CFGBlock *CFGBuilder::VisitContractAssertStmt(ContractAssertStmt *S,
+                                               AddStmtChoice asc) {
+  if (Context->getLangOpts().getContractViolationMode() !=
+      LangOptions::ContractViolationModeKind::Ignore)
+    return VisitStmt(S, asc);
+
+  // An ignored contract assertion has no runtime effects. Keep the statement
+  // itself in the CFG, but do not visit and evaluate its predicate.
+  if (asc.alwaysAdd(*this, S)) {
+    autoCreateBlock();
+    appendStmt(Block, S);
+  }
+  return Block;
 }
 
 /// VisitChildren - Visit the children of a Stmt.

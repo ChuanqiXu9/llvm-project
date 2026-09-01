@@ -116,6 +116,35 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
 static bool IsStructurallyEquivalent(const IdentifierInfo *Name1,
                                      const IdentifierInfo *Name2);
 
+static bool AddDeclMapping(StructuralEquivalenceContext &Context, Decl *D1,
+                           Decl *D2) {
+  D1 = D1->getCanonicalDecl();
+  D2 = D2->getCanonicalDecl();
+
+  auto Existing = Context.MappedDecls.find(D1);
+  if (Existing != Context.MappedDecls.end())
+    return Existing->second == D2;
+  if (Context.ReverseMappedDecls.contains(D2))
+    return false;
+
+  Context.MappedDecls.insert({D1, D2});
+  Context.ReverseMappedDecls.insert({D2, D1});
+  return true;
+}
+
+static std::optional<bool>
+CheckDeclMapping(StructuralEquivalenceContext &Context, Decl *D1, Decl *D2) {
+  D1 = D1->getCanonicalDecl();
+  D2 = D2->getCanonicalDecl();
+
+  auto Existing = Context.MappedDecls.find(D1);
+  if (Existing != Context.MappedDecls.end())
+    return Existing->second == D2;
+  if (Context.ReverseMappedDecls.contains(D2))
+    return false;
+  return std::nullopt;
+}
+
 static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
                                      const DeclarationName Name1,
                                      const DeclarationName Name2) {
@@ -2535,6 +2564,38 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
   if (!IsStructurallyEquivalent(Context, D1->getType(), D2->getType()))
     return false;
 
+  ContractAnnotation *C1 = D1->getDirectContractAnnotations();
+  ContractAnnotation *C2 = D2->getDirectContractAnnotations();
+  if (!C1 && !C2)
+    return true;
+
+  // Parameter and postcondition-result names do not affect a function
+  // contract. Pair the corresponding declarations before comparing predicate
+  // expressions so DeclRefExpr equivalence is positional rather than textual.
+  if (D1->getNumParams() != D2->getNumParams())
+    return false;
+  for (unsigned I = 0; I != D1->getNumParams(); ++I)
+    if (!AddDeclMapping(Context, D1->getParamDecl(I), D2->getParamDecl(I)))
+      return false;
+
+  while (C1 && C2) {
+    if (C1->getKind() != C2->getKind() || C1->isInvalid() != C2->isInvalid() ||
+        bool(C1->getPredicate()) != bool(C2->getPredicate()) ||
+        bool(C1->getResultVar()) != bool(C2->getResultVar()))
+      return false;
+    if (C1->getResultVar() &&
+        !AddDeclMapping(Context, C1->getResultVar(), C2->getResultVar()))
+      return false;
+    if (C1->getPredicate() &&
+        !IsStructurallyEquivalent(Context, C1->getPredicate(),
+                                  C2->getPredicate()))
+      return false;
+    C1 = C1->getNext();
+    C2 = C2->getNext();
+  }
+  if (C1 || C2)
+    return false;
+
   return true;
 }
 
@@ -2671,6 +2732,9 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
 
   D1 = D1->getCanonicalDecl();
   D2 = D2->getCanonicalDecl();
+
+  if (std::optional<bool> Mapped = CheckDeclMapping(Context, D1, D2))
+    return *Mapped;
 
   if (D1 == D2)
     return true;

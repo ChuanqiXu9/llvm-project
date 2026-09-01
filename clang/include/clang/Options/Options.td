@@ -1833,6 +1833,21 @@ defm coroutines : BoolFOption<"coroutines",
           "Enable support for the C++ Coroutines">,
   NegFlag<SetFalse>>;
 
+defm contracts : BoolFOption<"contracts",
+  LangOpts<"Contracts">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option],
+          "Enable support for C++ Contracts">,
+  NegFlag<SetFalse>>,
+  ShouldParseIf<cplusplus.KeyPath>;
+def fcontract_mode_EQ : Joined<["-"], "fcontract-mode=">, Group<f_Group>,
+  HelpText<"Set behavior when a C++ contract is violated">,
+  Values<"enforce,observe,ignore">,
+  NormalizedValues<["Enforce", "Observe", "Ignore"]>,
+  NormalizedValuesScope<"LangOptions::ContractViolationModeKind">,
+  MarshallingInfoEnum<LangOpts<"ContractViolationMode">, "Enforce">,
+  Visibility<[ClangOption, CC1Option]>,
+  ShouldParseIf<cplusplus.KeyPath>;
+
 defm coro_aligned_allocation : BoolFOption<"coro-aligned-allocation",
   LangOpts<"CoroAlignedAllocation">, DefaultFalse,
   PosFlag<SetTrue, [], [ClangOption, CC1Option],

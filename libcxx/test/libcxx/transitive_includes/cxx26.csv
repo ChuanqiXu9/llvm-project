@@ -182,6 +182,10 @@ complex tuple
 complex typeinfo
 complex version
 concepts version
+contracts cstdint
+contracts source_location
+contracts version
+condition_variable atomic
 condition_variable cerrno
 condition_variable climits
 condition_variable cstdint

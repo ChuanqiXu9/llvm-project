@@ -20,6 +20,15 @@
 
 import std;
 
+#if __cplusplus > 202302L
+static_assert(std::is_enum_v<std::contracts::assertion_kind>);
+static_assert(std::is_enum_v<std::contracts::evaluation_semantic>);
+static_assert(std::is_enum_v<std::contracts::detection_mode>);
+static_assert(std::is_class_v<std::contracts::contract_violation>);
+static_assert(std::is_same_v<decltype(&std::contracts::invoke_default_contract_violation_handler),
+                             void (*)(const std::contracts::contract_violation&) noexcept>);
+#endif
+
 int main(int, char**) {
   std::println("Hello modular world");
   return 0;

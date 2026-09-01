@@ -482,6 +482,124 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
     }
   }
 
+  // Parse delayed contract specifiers (pre/post), if there are any.
+  bool ParsedAnyLateContract = false;
+  FunctionDecl *LateContractFD = nullptr;
+  if (auto *FunTmpl = dyn_cast<FunctionTemplateDecl>(LM.Method))
+    LateContractFD = FunTmpl->getTemplatedDecl();
+  else
+    LateContractFD = dyn_cast<FunctionDecl>(LM.Method);
+  bool ParseLateContracts =
+      LM.ContractSpecifiers.empty() ||
+      Actions.ActOnStartLateParsedContractSpecifiers(LateContractFD);
+  for (auto &CS : LM.ContractSpecifiers) {
+    if (!ParseLateContracts)
+      break;
+    auto &Info = CS.Info;
+    if (std::unique_ptr<CachedTokens> Toks = std::move(Info.PredicateTokens)) {
+      ParenBraceBracketBalancer BalancerRAIIObj(*this);
+
+      // Skip empty token streams (should have been diagnosed during parsing)
+      if (Toks->empty())
+        continue;
+
+      // Mark the end of the contract predicate so that we know when to stop.
+      Token LastContractToken = Toks->back();
+      Token ContractEnd;
+      ContractEnd.startToken();
+      ContractEnd.setKind(tok::eof);
+      ContractEnd.setLocation(LastContractToken.getEndLoc());
+      ContractEnd.setEofData(LM.Method);
+      Toks->push_back(ContractEnd);
+
+      // Parse the contract predicate from its saved token stream.
+      Toks->push_back(Tok); // So that the current token doesn't get lost
+      PP.EnterTokenStream(*Toks, true, /*IsReinject*/ true);
+
+      // Consume the previously-pushed token.
+      ConsumeAnyToken();
+
+      // C++11 [expr.prim.general]p3:
+      //   If a declaration declares a member function or member function
+      //   template of a class X, the expression this is a prvalue of type
+      //   "pointer to cv-qualifier-seq X" between the optional cv-qualifer-seq
+      //   and the end of the function-definition, member-declarator, or
+      //   declarator.
+      CXXMethodDecl *Method;
+      FunctionDecl *FunctionToPush = LateContractFD;
+      Method = dyn_cast<CXXMethodDecl>(FunctionToPush);
+
+      // Setup the CurScope to match the function DeclContext.
+      ParseScope FnScope(this, Scope::FnScope);
+      Sema::ContextRAII FnContext(Actions, FunctionToPush,
+                                  /*NewThisContext=*/false);
+
+      Sema::CXXThisScopeRAII ThisScope(
+          Actions, Method ? Method->getParent() : nullptr,
+          Method ? Method->getMethodQualifiers() : Qualifiers{},
+          Method && !Method->isStatic() && getLangOpts().CPlusPlus11);
+
+      // For post-conditions with result names, create a scope and result
+      // variable.
+      std::optional<ParseScope> ResultNameScope;
+      VarDecl *ResultVar = nullptr;
+      if (Info.CKind == Declarator::ContractSpecInfo::Post && Info.ResultName) {
+        ResultNameScope.emplace(this, Scope::DeclScope);
+        ResultVar = Actions.ActOnPostConditionResultName(
+            getCurScope(), FunctionToPush, Info.ResultName, Info.ResultNameLoc);
+      }
+
+      // Parse the predicate expression.
+      EnterExpressionEvaluationContext Evaluated(
+          Actions, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+      Sema::ContractPredicateEvaluationRAII ContractPredicateContext(Actions,
+                                                                     ResultVar);
+      ExprResult Predicate = ParseConditionalExpression();
+
+      // Close the result name scope before consuming ')' so that the
+      // result name is not visible outside this contract specifier.
+      ResultNameScope.reset();
+
+      if (Predicate.isInvalid()) {
+        // Skip through until we reach the 'end of contract predicate' token.
+        while (Tok.isNot(tok::eof))
+          ConsumeAnyToken();
+        if (Tok.is(tok::eof) && Tok.getEofData() == LM.Method)
+          ConsumeAnyToken();
+        Actions.ActOnLateParsedContractSpecifier(
+            FunctionToPush, Info.CKind == Declarator::ContractSpecInfo::Pre,
+            /*Predicate=*/nullptr, ResultVar, Info.KwLoc);
+        ParsedAnyLateContract = true;
+        continue;
+      }
+
+      if (Tok.isNot(tok::eof) || Tok.getEofData() != LM.Method) {
+        // There are unparsed tokens - error.
+        Diag(Tok.getLocation(), diag::err_expected_after);
+      }
+
+      // There could be leftover tokens (e.g. because of an error).
+      // Skip through until we reach the 'end of contract predicate' token.
+      while (Tok.isNot(tok::eof))
+        ConsumeAnyToken();
+
+      if (Tok.is(tok::eof) && Tok.getEofData() == LM.Method)
+        ConsumeAnyToken();
+
+      // Get the FunctionDecl and call ActOnLateParsedContractSpecifier.
+      FunctionDecl *FD = FunctionToPush;
+
+      Actions.ActOnLateParsedContractSpecifier(
+          FD, Info.CKind == Declarator::ContractSpecInfo::Pre, Predicate.get(),
+          ResultVar, Info.KwLoc);
+      ParsedAnyLateContract = true;
+    }
+  }
+
+  if (ParsedAnyLateContract) {
+    Actions.ActOnFinishLateParsedContractSpecifiers(LateContractFD);
+  }
+
   // Parse a delayed exception-specification, if there is one.
   if (CachedTokens *Toks = LM.ExceptionSpecTokens) {
     ParenBraceBracketBalancer BalancerRAIIObj(*this);

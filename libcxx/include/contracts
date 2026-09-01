@@ -1,0 +1,123 @@
+// -*- C++ -*-
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef _LIBCPP_CONTRACTS
+#define _LIBCPP_CONTRACTS
+
+/* contracts synopsis
+
+namespace std::contracts {
+
+enum class assertion_kind : uint_least16_t;
+enum class evaluation_semantic : uint_least16_t;
+enum class detection_mode : uint_least16_t;
+
+using __vendor_ext = void;
+
+class contract_violation {
+public:
+  contract_violation(const contract_violation&) = delete;
+  contract_violation& operator=(const contract_violation&) = delete;
+
+  assertion_kind kind() const noexcept;
+  evaluation_semantic semantic() const noexcept;
+  contracts::detection_mode detection_mode() const noexcept;
+  const char* comment() const noexcept;
+  source_location location() const noexcept;
+  bool is_terminating() const noexcept;
+};
+
+void invoke_default_contract_violation_handler(const contract_violation&) noexcept;
+
+} // namespace std::contracts
+
+*/
+
+#if __cplusplus < 201103L && defined(_LIBCPP_USE_FROZEN_CXX03_HEADERS)
+#  include <__cxx03/__config>
+#else
+#  include <__config>
+#  include <source_location>
+#  include <version>
+
+#  if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+#    pragma GCC system_header
+#  endif
+
+_LIBCPP_BEGIN_NAMESPACE_STD
+
+#  if _LIBCPP_STD_VER >= 26 || defined(__cpp_contracts)
+
+namespace contracts {
+
+enum class assertion_kind : __UINT16_TYPE__ {
+  pre = 1,
+  post = 2,
+  assert = 3,
+};
+
+enum class evaluation_semantic : __UINT16_TYPE__ {
+  ignore = 1,
+  observe = 2,
+  enforce = 3,
+  quick_enforce = 4,
+};
+
+enum class detection_mode : __UINT16_TYPE__ {
+  predicate_false = 1,
+  evaluation_exception = 2,
+};
+
+using __vendor_ext = void;
+
+// Match the experimental GCC/libstdc++ ABI targeted by this downstream
+// implementation so Clang can pass a synthesized violation object through the
+// standard-library interface. This concrete shape is not prescribed by
+// P2900R14.
+class contract_violation {
+  [[maybe_unused]] __UINT16_TYPE__ _M_version;
+  assertion_kind _M_assertion_kind;
+  evaluation_semantic _M_evaluation_semantic;
+  detection_mode _M_detection_mode;
+  const char* _M_comment;
+  const void* _M_src_loc_ptr;
+  [[maybe_unused]] __vendor_ext* _M_ext;
+
+public:
+  contract_violation(const contract_violation&) = delete;
+  contract_violation& operator=(const contract_violation&) = delete;
+
+  _LIBCPP_HIDE_FROM_ABI assertion_kind kind() const noexcept { return _M_assertion_kind; }
+  _LIBCPP_HIDE_FROM_ABI evaluation_semantic semantic() const noexcept { return _M_evaluation_semantic; }
+  _LIBCPP_HIDE_FROM_ABI contracts::detection_mode detection_mode() const noexcept { return _M_detection_mode; }
+  _LIBCPP_HIDE_FROM_ABI const char* comment() const noexcept { return _M_comment; }
+  _LIBCPP_HIDE_FROM_ABI source_location location() const noexcept {
+    source_location __loc;
+    __loc.__ptr_ = static_cast<const source_location::__impl*>(_M_src_loc_ptr);
+    return __loc;
+  }
+  _LIBCPP_HIDE_FROM_ABI bool is_terminating() const noexcept {
+    return _M_evaluation_semantic == evaluation_semantic::enforce ||
+           _M_evaluation_semantic == evaluation_semantic::quick_enforce;
+  }
+};
+
+_LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
+_LIBCPP_EXPORTED_FROM_ABI void invoke_default_contract_violation_handler(const contract_violation&) noexcept;
+_LIBCPP_END_EXPLICIT_ABI_ANNOTATIONS
+
+} // namespace contracts
+
+#  endif // _LIBCPP_STD_VER >= 26 || defined(__cpp_contracts)
+
+_LIBCPP_END_NAMESPACE_STD
+
+#endif // __cplusplus < 201103L && defined(_LIBCPP_USE_FROZEN_CXX03_HEADERS)
+
+#endif // _LIBCPP_CONTRACTS

@@ -842,6 +842,9 @@ MemberExpr *Sema::BuildMemberExpr(
   E->setHadMultipleCandidates(HadMultipleCandidates);
   MarkMemberReferenced(E);
 
+  if (isa<FieldDecl, IndirectFieldDecl>(Member))
+    E->setType(getContractPredicateDeclRefType(Member, E->getType()));
+
   // C++ [except.spec]p17:
   //   An exception-specification is considered to be needed when:
   //   - in an expression the function is the unique lookup result or the

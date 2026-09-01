@@ -2463,7 +2463,16 @@ void Parser::HandleMemberFunctionDeclDelays(Declarator &DeclaratorInfo,
     }
   }
 
-  if (NeedLateParse) {
+  // Check if there are any contract specifiers with cached tokens
+  bool HasLateParsedContracts = false;
+  for (const auto &CS : DeclaratorInfo.getContractSpecifiers()) {
+    if (CS.PredicateTokens) {
+      HasLateParsedContracts = true;
+      break;
+    }
+  }
+
+  if (NeedLateParse || HasLateParsedContracts) {
     // Push this method onto the stack of late-parsed method
     // declarations.
     auto LateMethod = new LateParsedMethodDeclaration(this, ThisDecl);
@@ -2482,6 +2491,12 @@ void Parser::HandleMemberFunctionDeclDelays(Declarator &DeclaratorInfo,
     if (FTI.getExceptionSpecType() == EST_Unparsed) {
       LateMethod->ExceptionSpecTokens = FTI.ExceptionSpecTokens;
       FTI.ExceptionSpecTokens = nullptr;
+    }
+
+    // Stash contract specifiers with cached tokens in the late-parsed method.
+    for (auto &CS : DeclaratorInfo.getContractSpecifiers()) {
+      if (CS.PredicateTokens)
+        LateMethod->ContractSpecifiers.emplace_back(std::move(CS));
     }
   }
 }
@@ -2592,8 +2607,9 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     Declarator &DeclaratorInfo, VirtSpecifiers &VS, ExprResult &BitfieldSize,
     LateParsedAttrList &LateParsedAttrs) {
   // member-declarator:
-  //   declarator virt-specifier-seq[opt] pure-specifier[opt]
-  //   declarator requires-clause
+  //   declarator virt-specifier-seq[opt]
+  //     function-contract-specifier-seq[opt] pure-specifier[opt]
+  //   declarator requires-clause function-contract-specifier-seq[opt]
   //   declarator brace-or-equal-initializer[opt]
   //   identifier attribute-specifier-seq[opt] ':' constant-expression
   //       brace-or-equal-initializer[opt]
@@ -2620,21 +2636,28 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     BitfieldSize = ParseConstantExpression();
     if (BitfieldSize.isInvalid())
       SkipUntil(tok::comma, StopAtSemi | StopBeforeMatch);
-  } else if (Tok.is(tok::kw_requires)) {
-    TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
-    // With abbreviated function templates - we need to explicitly add depth to
-    // account for the implicit template parameter list induced by the template.
-    if (DeclaratorInfo.getTemplateParameterLists().empty() &&
-        DeclaratorInfo.getInventedTemplateParameterList())
-      ++CurTemplateDepthTracker;
-    ParseTrailingRequiresClauseWithScope(DeclaratorInfo);
   } else {
-    ParseOptionalCXX11VirtSpecifierSeq(
-        VS, getCurrentClass().IsInterface,
-        DeclaratorInfo.getDeclSpec().getFriendSpecLoc());
-    if (!VS.isUnset())
-      MaybeParseAndDiagnoseDeclSpecAfterCXX11VirtSpecifierSeq(DeclaratorInfo,
-                                                              VS);
+    if (Tok.isNot(tok::kw_requires)) {
+      ParseOptionalCXX11VirtSpecifierSeq(
+          VS, getCurrentClass().IsInterface,
+          DeclaratorInfo.getDeclSpec().getFriendSpecLoc());
+      if (!VS.isUnset())
+        MaybeParseAndDiagnoseDeclSpecAfterCXX11VirtSpecifierSeq(DeclaratorInfo,
+                                                                VS);
+    }
+
+    if (Tok.is(tok::kw_requires) ||
+        (getLangOpts().Contracts && getContractSpecifierKind())) {
+      TemplateParameterDepthRAII CurTemplateDepthTracker(
+          TemplateParameterDepth);
+      // With abbreviated function templates - we need to explicitly add depth
+      // to account for the implicit template parameter list induced by the
+      // template.
+      if (DeclaratorInfo.getTemplateParameterLists().empty() &&
+          DeclaratorInfo.getInventedTemplateParameterList())
+        ++CurTemplateDepthTracker;
+      ParseFunctionDeclaratorTail(DeclaratorInfo);
+    }
   }
 
   // If a simple-asm-expr is present, parse it.
@@ -4199,8 +4222,63 @@ TypeResult Parser::ParseTrailingReturnType(SourceRange &Range,
                                    : DeclaratorContext::TrailingReturn);
 }
 
-void Parser::ParseTrailingRequiresClauseWithScope(Declarator &D) {
-  assert(Tok.is(tok::kw_requires) && "expected requires");
+void Parser::ParseFunctionDeclaratorTail(Declarator &D,
+                                         bool AllowTrailingRequiresClause) {
+  // Contract specifiers can be seen after a declarator that does not contain
+  // a function type chunk (for example, `int value pre(true);`).  Keep the
+  // recovery in ParseContractSpecifiers, but do not assert before reaching it.
+  if (!D.hasFunctionTypeChunk() && Tok.isNot(tok::kw_requires)) {
+    if (getLangOpts().Contracts)
+      ParseContractSpecifiers(D, ParsedType());
+    return;
+  }
+
+  if (Tok.isNot(tok::kw_requires) &&
+      (!getLangOpts().Contracts || !getContractSpecifierKind()))
+    return;
+
+  auto ParseTail = [&] {
+    const DeclSpec *MethodDS = &D.getDeclSpec();
+    ParsedType TrailingReturnType;
+    if (D.isFunctionDeclarator()) {
+      const auto &FTI = D.getFunctionTypeInfo();
+      if (FTI.MethodQualifiers)
+        MethodDS = FTI.MethodQualifiers;
+      TrailingReturnType = D.getTrailingReturnType();
+    }
+
+    if (AllowTrailingRequiresClause && Tok.is(tok::kw_requires))
+      ParseTrailingRequiresClause(D, *MethodDS);
+
+    if (!getLangOpts().Contracts)
+      return;
+
+    size_t NumContractSpecifiers = D.getContractSpecifiers().size();
+
+    // Out-of-line member contracts need the same `this` scope as exception
+    // specifications and trailing return types.
+    std::optional<Sema::CXXThisScopeRAII> ThisScope;
+    InitCXXThisScopeForDeclaratorIfRelevant(D, *MethodDS, ThisScope);
+    ParseContractSpecifiers(D, TrailingReturnType);
+
+    // Diagnose and recover from the pre-standard order.
+    if (D.getContractSpecifiers().size() != NumContractSpecifiers &&
+        Tok.is(tok::kw_requires)) {
+      Diag(Tok, diag::err_requires_clause_must_precede_contract_specifiers);
+      if (AllowTrailingRequiresClause)
+        ParseTrailingRequiresClause(D, *MethodDS);
+    }
+  };
+
+  // A lambda is still in the prototype scope in which its parameters were
+  // parsed. All other callers arrive after the complete declarator has been
+  // formed, so recreate that scope before parsing its tail.
+  if (D.getContext() == DeclaratorContext::LambdaExpr) {
+    assert(getCurScope()->isFunctionPrototypeScope() &&
+           "lambda should retain its function prototype scope");
+    ParseTail();
+    return;
+  }
 
   // C++23 [basic.scope.namespace]p1:
   //   For each non-friend redeclaration or specialization whose target scope
@@ -4224,10 +4302,11 @@ void Parser::ParseTrailingRequiresClauseWithScope(Declarator &D) {
                                   Scope::FunctionDeclarationScope |
                                   Scope::FunctionPrototypeScope);
 
-  ParseTrailingRequiresClause(D);
+  Actions.ActOnStartFunctionDeclaratorTail(getCurScope(), D);
+  ParseTail();
 }
 
-void Parser::ParseTrailingRequiresClause(Declarator &D) {
+void Parser::ParseTrailingRequiresClause(Declarator &D, const DeclSpec &DS) {
   assert(Tok.is(tok::kw_requires) && "expected requires");
   assert(
       getCurScope()->isFunctionPrototypeScope() &&
@@ -4236,10 +4315,9 @@ void Parser::ParseTrailingRequiresClause(Declarator &D) {
   SourceLocation RequiresKWLoc = ConsumeToken();
 
   ExprResult TrailingRequiresClause;
-  Actions.ActOnStartTrailingRequiresClause(getCurScope(), D);
 
   std::optional<Sema::CXXThisScopeRAII> ThisScope;
-  InitCXXThisScopeForDeclaratorIfRelevant(D, D.getDeclSpec(), ThisScope);
+  InitCXXThisScopeForDeclaratorIfRelevant(D, DS, ThisScope);
 
   TrailingRequiresClause =
       ParseConstraintLogicalOrExpression(/*IsTrailingRequiresClause=*/true);
@@ -4278,6 +4356,142 @@ void Parser::ParseTrailingRequiresClause(Declarator &D) {
     } else
       SkipUntil({tok::equal, tok::l_brace, tok::arrow, tok::kw_try, tok::comma},
                 StopAtSemi | StopBeforeMatch);
+  }
+}
+
+std::optional<Declarator::ContractSpecInfo::Kind>
+Parser::getContractSpecifierKind() {
+  if (!getLangOpts().Contracts || Tok.isNot(tok::identifier) ||
+      NextToken().isNot(tok::l_paren))
+    return std::nullopt;
+  IdentifierInfo *II = Tok.getIdentifierInfo();
+  if (II->isStr("pre"))
+    return Declarator::ContractSpecInfo::Pre;
+  if (II->isStr("post"))
+    return Declarator::ContractSpecInfo::Post;
+  return std::nullopt;
+}
+
+void Parser::ParseContractSpecifiers(Declarator &D,
+                                     ParsedType TrailingReturnType) {
+  assert(getLangOpts().Contracts && "contracts are not enabled");
+  if (!getContractSpecifierKind())
+    return;
+
+  auto SkipContractSpecifierSequence = [&] {
+    while (getContractSpecifierKind()) {
+      ConsumeToken();
+      BalancedDelimiterTracker T(*this, tok::l_paren);
+      if (T.consumeOpen())
+        return;
+      T.skipToEnd();
+    }
+  };
+
+  // P2900R14: Contracts may not be specified on function pointer types or
+  // type aliases. Check the completed declarator, for which a pointer or
+  // reference before the first function chunk means that it does not declare
+  // a function. Pointer and reference chunks after that function chunk are
+  // part of its return type and are permitted.
+  if (D.getContext() == DeclaratorContext::AliasDecl ||
+      D.getContext() == DeclaratorContext::AliasTemplate) {
+    Diag(Tok.getLocation(), diag::err_contracts_on_type_alias);
+    SkipContractSpecifierSequence();
+    return;
+  }
+
+  if (!D.isDeclarationOfFunction()) {
+    Diag(Tok.getLocation(), diag::err_contracts_on_function_pointer);
+    SkipContractSpecifierSequence();
+    return;
+  }
+
+  // Parse a sequence of contract specifiers.
+  while (auto Kind = getContractSpecifierKind()) {
+    bool IsPre = *Kind == Declarator::ContractSpecInfo::Pre;
+    SourceLocation KwLoc = ConsumeToken();
+    BalancedDelimiterTracker T(*this, tok::l_paren);
+    T.consumeOpen();
+    // Member predicates are parsed after the class is complete, when member
+    // lookup and `this` are available. Do not create their result variable in
+    // this provisional pass; the delayed pass creates it once from the exact
+    // FunctionDecl return type.
+    bool ShouldCacheTokens = D.getContext() == DeclaratorContext::Member &&
+                             !D.getDeclSpec().isVirtualSpecified();
+    IdentifierInfo *ResultName = nullptr;
+    SourceLocation ResultNameLoc;
+    VarDecl *ResultVar = nullptr;
+    std::optional<ParseScope> ResultNameScope;
+    if (!IsPre && Tok.is(tok::identifier) && NextToken().is(tok::colon)) {
+      ResultName = Tok.getIdentifierInfo();
+      ResultNameLoc = ConsumeToken();
+      ConsumeToken();
+
+      if (!ShouldCacheTokens) {
+        ResultNameScope.emplace(this, Scope::DeclScope);
+        ResultVar = Actions.ActOnPostConditionResultName(
+            getCurScope(), D, ResultName, ResultNameLoc, TrailingReturnType);
+      }
+    }
+    // Check if we're in a member function declarator where 'this' might not
+    // be available yet. If so, cache the tokens for delayed parsing.
+    // We cache tokens when the declarator context is Member (member function
+    // declaration), but not when the function is virtual (virtual functions
+    // are rejected entirely). This also applies to static member functions:
+    // although they do not have 'this', their predicates can require the
+    // surrounding class to be complete (for example, a named result of the
+    // class type whose members are used by a postcondition).
+    ExprResult Predicate;
+    std::unique_ptr<CachedTokens> PredicateTokens;
+
+    if (ShouldCacheTokens) {
+      PredicateTokens = std::make_unique<CachedTokens>();
+      ConsumeAndStoreUntil(tok::r_paren, *PredicateTokens,
+                           /*StopAtSemi=*/false,
+                           /*ConsumeFinalToken=*/false);
+
+      // Check for empty predicate
+      if (PredicateTokens->empty()) {
+        Diag(Tok.getLocation(), diag::err_expected_expression);
+        ResultNameScope.reset();
+        T.consumeClose();
+        continue;
+      }
+    } else {
+      // Parse immediately for non-member functions or virtual functions
+      {
+        EnterExpressionEvaluationContext Evaluated(
+            Actions, Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
+        Sema::ContractPredicateEvaluationRAII ContractPredicateContext(
+            Actions, ResultVar);
+        Predicate = ParseConditionalExpression();
+        if (!Predicate.isInvalid())
+          Predicate =
+              Actions.ActOnFinishContractPredicate(Predicate.get(), KwLoc);
+      }
+    }
+
+    // Close the result name scope before consuming ')' so that the
+    // result name is not visible outside this contract specifier.
+    ResultNameScope.reset();
+    T.consumeClose();
+
+    // If we parsed immediately and got an invalid predicate, skip this
+    // specifier
+    if (!ShouldCacheTokens && Predicate.isInvalid())
+      continue;
+    Declarator::ContractSpecInfo Info;
+    Info.CKind = IsPre ? Declarator::ContractSpecInfo::Pre
+                       : Declarator::ContractSpecInfo::Post;
+    Info.Predicate = Predicate.get();
+    Info.PredicateTokens = std::move(PredicateTokens);
+    Info.ResultName = ResultName;
+    Info.ResultVar = ResultVar;
+    Info.KwLoc = KwLoc;
+    Info.LParenLoc = T.getOpenLocation();
+    Info.RParenLoc = T.getCloseLocation();
+    Info.ResultNameLoc = ResultNameLoc;
+    D.addContractSpecifier(std::move(Info));
   }
 }
 

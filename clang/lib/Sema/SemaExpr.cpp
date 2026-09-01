@@ -2505,6 +2505,8 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
       VK, FoundD, TemplateArgs, getNonOdrUseReasonInCurrentContext(D));
   MarkDeclRefReferenced(E);
 
+  E->setType(getContractPredicateDeclRefType(D, E->getType()));
+
   // C++ [except.spec]p17:
   //   An exception-specification is considered to be needed when:
   //   - in an expression, the function is the unique lookup result or
@@ -2546,6 +2548,70 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
       E->setObjectKind(BE->getObjectKind());
 
   return E;
+}
+
+QualType Sema::getContractPredicateDeclRefType(const ValueDecl *VD,
+                                               QualType Type) const {
+  // Template argument deduction, constraint satisfaction, and function
+  // instantiation triggered by a predicate are not themselves part of the
+  // predicate's implicit-const context.
+  if (!isInContractPredicateImplicitConstContext() ||
+      BuildingContractPredicateCaptureInit || !VD || Type.isNull())
+    return Type;
+
+  QualType DeclType = VD->getType();
+  if (const auto *Pack = DeclType->getAs<PackExpansionType>())
+    DeclType = Pack->getPattern();
+  QualType ObjectType = DeclType.getNonReferenceType();
+  if (!ObjectType->isObjectType())
+    return Type;
+
+  if (isa<FieldDecl, IndirectFieldDecl>(VD)) {
+    for (unsigned I = ContractPredicateFunctionScopeDepth,
+                  E = FunctionScopes.size();
+         I < E; ++I) {
+      auto *LSI = dyn_cast<LambdaScopeInfo>(FunctionScopes[I]);
+      if (LSI && LSI->isCXXThisCaptured() &&
+          LSI->getCXXThisCapture().isCopyCapture())
+        return Type;
+    }
+    return Type.withConst();
+  }
+
+  // A declaration introduced by a lambda within the predicate is inside the
+  // contract assertion, so the implicit-const rule does not apply to it.
+  for (unsigned I = ContractPredicateFunctionScopeDepth,
+                E = FunctionScopes.size();
+       I < E; ++I) {
+    const auto *LSI = dyn_cast<LambdaScopeInfo>(FunctionScopes[I]);
+    if (LSI && LSI->CallOperator &&
+        LSI->CallOperator->Encloses(VD->getDeclContext()))
+      return Type;
+  }
+
+  // A copy capture denotes the closure's data member, which is introduced
+  // inside the predicate. A chain consisting only of reference captures still
+  // denotes the entity declared outside the predicate.
+  for (unsigned I = ContractPredicateFunctionScopeDepth,
+                E = FunctionScopes.size();
+       I < E; ++I) {
+    const auto *LSI = dyn_cast<LambdaScopeInfo>(FunctionScopes[I]);
+    if (!LSI)
+      continue;
+    if (LSI->isCaptured(const_cast<ValueDecl *>(VD))) {
+      if (LSI->getCapture(const_cast<ValueDecl *>(VD)).isCopyCapture())
+        return Type;
+      continue;
+    }
+    bool IsCapturableLocal = isa<ParmVarDecl>(VD);
+    if (const auto *Var = dyn_cast<VarDecl>(VD))
+      IsCapturableLocal |= Var->hasLocalStorage();
+    if (LSI->ImpCaptureStyle == LambdaScopeInfo::ImpCap_LambdaByval &&
+        IsCapturableLocal)
+      return Type;
+  }
+
+  return Type.withConst();
 }
 
 void
@@ -17506,7 +17572,8 @@ ExprResult Sema::ActOnGNUNullExpr(SourceLocation TokenLoc) {
   return new (Context) GNUNullExpr(Ty, TokenLoc);
 }
 
-static CXXRecordDecl *LookupStdSourceLocationImpl(Sema &S, SourceLocation Loc) {
+static CXXRecordDecl *LookupStdSourceLocationImpl(Sema &S, SourceLocation Loc,
+                                                  bool AllowPrivateImpl) {
   CXXRecordDecl *ImplDecl = nullptr;
 
   // Fetch the std::source_location::__impl decl.
@@ -17517,6 +17584,14 @@ static CXXRecordDecl *LookupStdSourceLocationImpl(Sema &S, SourceLocation Loc) {
       if (auto *SLDecl = ResultSL.getAsSingle<RecordDecl>()) {
         LookupResult ResultImpl(S, &S.PP.getIdentifierTable().get("__impl"),
                                 Loc, Sema::LookupOrdinaryName);
+        // Compiler-synthesized uses can name the implementation type without
+        // exposing it as part of source_location's public interface. This is
+        // needed when source_location is imported from a module: unlike parsing
+        // its header, importing does not populate StdSourceLocationImplDecl in
+        // the current Sema instance from source_location::current's class
+        // context.
+        if (AllowPrivateImpl)
+          ResultImpl.suppressAccessDiagnostics();
         if ((SLDecl->isCompleteDefinition() || SLDecl->isBeingDefined()) &&
             S.LookupQualifiedName(ResultImpl, SLDecl)) {
           ImplDecl = ResultImpl.getAsSingle<CXXRecordDecl>();
@@ -17575,7 +17650,8 @@ static CXXRecordDecl *LookupStdSourceLocationImpl(Sema &S, SourceLocation Loc) {
 
 ExprResult Sema::ActOnSourceLocExpr(SourceLocIdentKind Kind,
                                     SourceLocation BuiltinLoc,
-                                    SourceLocation RPLoc) {
+                                    SourceLocation RPLoc,
+                                    bool AllowPrivateImpl) {
   QualType ResultTy;
   switch (Kind) {
   case SourceLocIdentKind::File:
@@ -17594,7 +17670,7 @@ ExprResult Sema::ActOnSourceLocExpr(SourceLocIdentKind Kind,
   case SourceLocIdentKind::SourceLocStruct:
     if (!StdSourceLocationImplDecl) {
       StdSourceLocationImplDecl =
-          LookupStdSourceLocationImpl(*this, BuiltinLoc);
+          LookupStdSourceLocationImpl(*this, BuiltinLoc, AllowPrivateImpl);
       if (!StdSourceLocationImplDecl)
         return ExprError();
     }
@@ -19089,6 +19165,17 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
       (OdrUse == OdrUseContext::Used ||
        (NeededForConstantEvaluation && !Func->isPureVirtual()));
 
+  // A class-template member imported through a BMI can already expose its
+  // instantiated body while its contracts still come from the dependent
+  // pattern. Such a function still needs a Sema instantiation step before it
+  // can be emitted: CodeGen cannot evaluate a predicate that refers to the
+  // pattern's parameters and dependent `this` type.
+  FunctionDecl *ContractPattern = Func->getTemplateInstantiationPattern();
+  bool NeedsContractInstantiation =
+      NeedDefinition && Func->isImplicitlyInstantiable() &&
+      !Func->getDirectContractAnnotations() && ContractPattern &&
+      ContractPattern != Func && ContractPattern->hasContracts();
+
   // C++14 [temp.expl.spec]p6:
   //   If a template [...] is explicitly specialized then that specialization
   //   shall be declared before the first use of that specialization that would
@@ -19103,7 +19190,7 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
     CUDA().CheckCall(Loc, Func);
 
   // If we need a definition, try to create one.
-  if (NeedDefinition && !Func->getBody()) {
+  if (NeedDefinition && (!Func->getBody() || NeedsContractInstantiation)) {
     runWithSufficientStackSpace(Loc, [&] {
       if (CXXConstructorDecl *Constructor =
               dyn_cast<CXXConstructorDecl>(Func)) {
@@ -19182,7 +19269,8 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
         }
 
         if (FirstInstantiation || TSK != TSK_ImplicitInstantiation ||
-            Func->isConstexpr()) {
+            Func->isConstexpr() ||
+            (NeedsContractInstantiation && !Func->instantiationIsPending())) {
           if (isa<CXXRecordDecl>(Func->getDeclContext()) &&
               cast<CXXRecordDecl>(Func->getDeclContext())->isLocalClass() &&
               CodeSynthesisContexts.size())
@@ -19902,10 +19990,16 @@ bool Sema::tryCaptureVariable(
   if (CapturingFunctionScopes == 0 && (!BuildAndDiagnose || VarDC == DC))
     return true;
 
-  // Exception: Function parameters are not tied to the function's DeclContext
-  // until we enter the function definition. Capturing them anyway would result
-  // in an out-of-bounds error while traversing DC and its parents.
-  if (isa<ParmVarDecl>(Var) && !VarDC->isFunctionOrMethod())
+  // Exception: Function parameters and postcondition result variables are not
+  // tied to the function's DeclContext while its contract predicates are being
+  // parsed. Use the active lambda scopes as the outer boundary of the normal
+  // capture walk for those entities.
+  const bool IsUnboundFunctionParameter =
+      isa<ParmVarDecl>(Var) && !VarDC->isFunctionOrMethod();
+  const bool IsContractCapture =
+      isParsingContractPredicate() && isInContractPredicateLambda() &&
+      (IsUnboundFunctionParameter || isContractPredicateResultVar(Var));
+  if (IsUnboundFunctionParameter && !IsContractCapture)
     return true;
 
   const auto *VD = dyn_cast<VarDecl>(Var);
@@ -19919,6 +20013,15 @@ bool Sema::tryCaptureVariable(
 
   const unsigned MaxFunctionScopesIndex = FunctionScopeIndexToStopAt
       ? *FunctionScopeIndexToStopAt : FunctionScopes.size() - 1;
+  unsigned ContractCaptureScopeIndex = MaxFunctionScopesIndex;
+  if (IsContractCapture) {
+    if (FunctionScopes.empty() ||
+        !isa<LambdaScopeInfo>(FunctionScopes[MaxFunctionScopesIndex]))
+      return true;
+    while (ContractCaptureScopeIndex != FunctionScopesStart &&
+           isa<LambdaScopeInfo>(FunctionScopes[ContractCaptureScopeIndex - 1]))
+      --ContractCaptureScopeIndex;
+  }
   // We need to sync up the Declaration Context with the
   // FunctionScopeIndexToStopAt
   if (FunctionScopeIndexToStopAt) {
@@ -19941,7 +20044,7 @@ bool Sema::tryCaptureVariable(
 
   // Capture global variables if it is required to use private copy of this
   // variable.
-  bool IsGlobal = !VD->hasLocalStorage();
+  bool IsGlobal = !VD->hasLocalStorage() && !IsContractCapture;
   if (IsGlobal && !(LangOpts.OpenMP &&
                     OpenMP().isOpenMPCapturedDecl(Var, /*CheckScopeInfo=*/true,
                                                   MaxFunctionScopesIndex)))
@@ -19976,7 +20079,8 @@ bool Sema::tryCaptureVariable(
     if (LSI && !LSI->AfterParameterList) {
       // This allows capturing parameters from a default value which does not
       // seems correct
-      if (isa<ParmVarDecl>(Var) && !Var->getDeclContext()->isFunctionOrMethod())
+      if (isa<ParmVarDecl>(Var) &&
+          !Var->getDeclContext()->isFunctionOrMethod() && !IsContractCapture)
         return true;
     }
     // If the variable is declared in the current context, there is no need to
@@ -20140,6 +20244,10 @@ bool Sema::tryCaptureVariable(
       return true;
     }
     Explicit = false;
+    if (IsContractCapture && FunctionScopesIndex == ContractCaptureScopeIndex) {
+      --FunctionScopesIndex;
+      break;
+    }
     FunctionScopesIndex--;
     if (IsInScopeDeclarationContext)
       DC = ParentDC;

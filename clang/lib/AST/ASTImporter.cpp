@@ -605,6 +605,7 @@ namespace clang {
     ExpectedStmt VisitContinueStmt(ContinueStmt *S);
     ExpectedStmt VisitBreakStmt(BreakStmt *S);
     ExpectedStmt VisitReturnStmt(ReturnStmt *S);
+    ExpectedStmt VisitContractAssertStmt(ContractAssertStmt *S);
     // FIXME: MSAsmStmt
     // FIXME: SEHExceptStmt
     // FIXME: SEHFinallyStmt
@@ -4126,6 +4127,33 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
   }
   ToFunction->setParams(Parameters);
 
+  // Import source-ordered function contract annotations after parameters and
+  // the FunctionDecl itself have been mapped. Predicates can refer to both.
+  ContractAnnotation *ToContractHead = nullptr, *ToContractTail = nullptr;
+  for (auto *C = D->getDirectContractAnnotations(); C; C = C->getNext()) {
+    Error ContractErr = Error::success();
+    auto ToPredicate = importChecked(ContractErr, C->getPredicate());
+    auto ToResultVar = importChecked(ContractErr, C->getResultVar());
+    auto ToKwLoc = importChecked(ContractErr, C->getKeywordLoc());
+    auto ToLParenLoc = importChecked(ContractErr, C->getLParenLoc());
+    auto ToRParenLoc = importChecked(ContractErr, C->getRParenLoc());
+    auto ToHandlerBody = importChecked(ContractErr, C->getHandlerBody());
+    if (ContractErr)
+      return std::move(ContractErr);
+
+    auto *ToContract = new (Importer.getToContext())
+        ContractAnnotation(C->getKind(), ToPredicate, ToKwLoc, ToLParenLoc,
+                           ToRParenLoc, ToResultVar);
+    ToContract->setInvalid(C->isInvalid());
+    ToContract->setHandlerBody(ToHandlerBody);
+    if (ToContractTail)
+      ToContractTail->setNext(ToContract);
+    else
+      ToContractHead = ToContract;
+    ToContractTail = ToContract;
+  }
+  ToFunction->setContractAnnotations(ToContractHead);
+
   // We need to complete creation of FunctionProtoTypeLoc manually with setting
   // params it refers to.
   if (TInfo) {
@@ -7353,6 +7381,22 @@ ExpectedStmt ASTNodeImporter::VisitReturnStmt(ReturnStmt *S) {
 
   return ReturnStmt::Create(Importer.getToContext(), ToReturnLoc, ToRetValue,
                             ToNRVOCandidate);
+}
+
+ExpectedStmt ASTNodeImporter::VisitContractAssertStmt(ContractAssertStmt *S) {
+  Error Err = Error::success();
+  auto ToCondition = importChecked(Err, S->getCondition());
+  auto ToContractAssertLoc = importChecked(Err, S->getContractAssertLoc());
+  auto ToLParenLoc = importChecked(Err, S->getLParenLoc());
+  auto ToRParenLoc = importChecked(Err, S->getRParenLoc());
+  auto ToHandlerBody = importChecked(Err, S->getHandlerBody());
+  if (Err)
+    return std::move(Err);
+
+  auto *To = new (Importer.getToContext()) ContractAssertStmt(
+      ToCondition, ToContractAssertLoc, ToLParenLoc, ToRParenLoc);
+  To->setHandlerBody(ToHandlerBody);
+  return To;
 }
 
 ExpectedStmt ASTNodeImporter::VisitCXXCatchStmt(CXXCatchStmt *S) {

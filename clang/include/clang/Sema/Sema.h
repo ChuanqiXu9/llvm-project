@@ -6077,6 +6077,185 @@ public:
                         StringEvaluationContext EvalContext,
                         bool ErrorOnInvalidMessage);
 
+  class ContractPredicateEvaluationRAII {
+    Sema &S;
+    VarDecl *SavedResultVar;
+    DeclContext *SavedDeclContext;
+    unsigned SavedFunctionScopeDepth;
+    unsigned SavedCodeSynthesisContextDepth;
+
+  public:
+    explicit ContractPredicateEvaluationRAII(Sema &S,
+                                             VarDecl *ResultVar = nullptr)
+        : S(S), SavedResultVar(S.ContractPredicateResultVar),
+          SavedDeclContext(S.ContractPredicateDeclContext),
+          SavedFunctionScopeDepth(S.ContractPredicateFunctionScopeDepth),
+          SavedCodeSynthesisContextDepth(
+              S.ContractPredicateCodeSynthesisContextDepth) {
+      // A nested contract predicate has its own result binding. In
+      // particular, contract_assert inside a lambda in a postcondition must
+      // not inherit the enclosing postcondition's result variable.
+      S.ContractPredicateResultVar = ResultVar;
+      S.ContractPredicateDeclContext = S.CurContext;
+      S.ContractPredicateFunctionScopeDepth = S.FunctionScopes.size();
+      S.ContractPredicateCodeSynthesisContextDepth =
+          S.CodeSynthesisContexts.size();
+      ++S.ContractPredicateEvaluationDepth;
+    }
+    ContractPredicateEvaluationRAII(const ContractPredicateEvaluationRAII &) =
+        delete;
+    ContractPredicateEvaluationRAII &
+    operator=(const ContractPredicateEvaluationRAII &) = delete;
+    ~ContractPredicateEvaluationRAII() {
+      --S.ContractPredicateEvaluationDepth;
+      S.ContractPredicateResultVar = SavedResultVar;
+      S.ContractPredicateDeclContext = SavedDeclContext;
+      S.ContractPredicateFunctionScopeDepth = SavedFunctionScopeDepth;
+      S.ContractPredicateCodeSynthesisContextDepth =
+          SavedCodeSynthesisContextDepth;
+    }
+  };
+  bool isParsingContractPredicate() const {
+    return ContractPredicateEvaluationDepth != 0;
+  }
+  bool isInContractPredicateImplicitConstContext() const {
+    return isParsingContractPredicate() && ContractPredicateDeclContext &&
+           ContractPredicateDeclContext->Encloses(CurContext) &&
+           CodeSynthesisContexts.size() <=
+               ContractPredicateCodeSynthesisContextDepth;
+  }
+  bool isContractPredicateResultVar(const ValueDecl *VD) const {
+    return VD == ContractPredicateResultVar;
+  }
+  bool isInContractPredicateLambda() const {
+    return FunctionScopes.size() > ContractPredicateFunctionScopeDepth;
+  }
+  QualType getContractPredicateDeclRefType(const ValueDecl *VD,
+                                           QualType Type) const;
+  unsigned ContractPredicateEvaluationDepth = 0;
+  VarDecl *ContractPredicateResultVar = nullptr;
+  DeclContext *ContractPredicateDeclContext = nullptr;
+  unsigned ContractPredicateFunctionScopeDepth = 0;
+  unsigned ContractPredicateCodeSynthesisContextDepth = 0;
+  bool BuildingContractPredicateCaptureInit = false;
+
+  bool EvaluateStaticAssertMessageAsString(Expr *Message, std::string &Result,
+                                           ASTContext &Ctx,
+                                           bool ErrorOnInvalidMessage);
+
+  /// \name C++26 Contracts (P2900R14)
+  /// @{
+
+  /// Build contract annotation nodes from parsed specifiers and attach them
+  /// to the FunctionDecl.
+  void ActOnFunctionContractSpecifiers(FunctionDecl *FD, const Declarator &D);
+
+  /// Contextually convert a contract predicate to bool and finish it as a
+  /// full-expression. This must be called before parsing or instantiating the
+  /// next predicate so that temporary-object cleanups belong to the correct
+  /// contract annotation.
+  ExprResult ActOnFinishContractPredicate(Expr *Predicate,
+                                          SourceLocation ContractLoc);
+
+  /// Perform function-level checks before parsing delayed member contracts.
+  /// Returns false when every delayed annotation should be discarded.
+  bool ActOnStartLateParsedContractSpecifiers(FunctionDecl *FD);
+
+  /// Handle a late-parsed contract specifier (pre/post) for a member function.
+  /// This is called after the class is completely defined, when 'this' and
+  /// member variables are available.
+  void ActOnLateParsedContractSpecifier(FunctionDecl *FD, bool IsPre,
+                                        Expr *Predicate, VarDecl *ResultVar,
+                                        SourceLocation KwLoc);
+
+  /// Finish processing late-parsed contract specifiers for a member function.
+  /// Performs checks that require all delayed predicates to be available.
+  void ActOnFinishLateParsedContractSpecifiers(FunctionDecl *FD);
+
+  /// Create an implicit VarDecl for the result name in post(name: expr) and
+  /// push it into the current scope so the predicate expression can reference
+  /// it.
+  VarDecl *ActOnPostConditionResultName(Scope *S, Declarator &D,
+                                        IdentifierInfo *ResultName,
+                                        SourceLocation ResultNameLoc,
+                                        ParsedType TrailingReturnType);
+
+  /// Create a result variable while parsing a delayed member contract, after
+  /// its FunctionDecl and exact return type are available.
+  VarDecl *ActOnPostConditionResultName(Scope *S, FunctionDecl *FD,
+                                        IdentifierInfo *ResultName,
+                                        SourceLocation ResultNameLoc);
+
+  /// Create and map the result variable for an instantiated postcondition.
+  /// Diagnoses and returns null if the instantiated return type is void.
+  VarDecl *CreateContractResultVarForInstantiation(FunctionDecl *Instantiation,
+                                                   VarDecl *PatternResultVar);
+
+  /// Build a ContractAssertStmt from a parsed contract_assert(expr) statement.
+  StmtResult ActOnContractAssert(SourceLocation ContractAssertLoc,
+                                 Expr *Predicate, SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+
+  /// Look up the std::contracts types used to materialize a contract
+  /// violation. Results are cached following the StdCoroutineTraitsCache
+  /// pattern.
+  enum class ContractViolationLookupFailure {
+    None,
+    MissingNamespace,
+    MissingContractViolation,
+    MissingAssertionKind,
+    MissingEvaluationSemantic,
+    MissingDetectionMode,
+  };
+  ContractViolationLookupFailure
+  LookupContractViolationSupport(SourceLocation Loc);
+
+  /// Find a visible declaration of the replaceable global contract-violation
+  /// handler with the required signature. If none is visible, return the
+  /// compiler builtin that CodeGen lowers to the same global C++ ABI symbol.
+  FunctionDecl *LookupContractViolationHandler(SourceLocation Loc);
+
+  /// Build the handler body invoked when a contract is violated.
+  ///
+  /// "[basic.contract.eval] p5: The contract-violation handler is the function
+  ///  ::handle_contract_violation ([support.contract.handle])."
+  ///
+  /// \param PredicateRange source range of the predicate expression, used to
+  ///   extract the text for contract_violation::comment()
+  ///   ([support.contract.cviol]).
+  StmtResult BuildContractHandlerBody(SourceLocation ContractLoc,
+                                      SourceRange PredicateRange,
+                                      ContractKind Kind,
+                                      DeclContext *EnclosingDC);
+
+  /// Build any missing handler bodies on the annotations directly owned by
+  /// this function. This is the common completion path for ordinary parsing,
+  /// delayed member parsing, and template instantiation.
+  void BuildFunctionContractHandlers(FunctionDecl *FD);
+
+  /// For functions with deduced return types (including lambdas), after the
+  /// return type is deduced, rebuild post-conditions that have result
+  /// variables with DependentTy. Updates the result variable type, rebuilds
+  /// the predicate expression, and builds the handler body.
+  void RebuildDeducedReturnTypePostConditions(FunctionDecl *FD);
+
+  /// Cached std::contracts::contract_violation ([support.contract.cviol]).
+  CXXRecordDecl *StdContractViolationDecl = nullptr;
+  /// Cached compiler builtin used when no user-visible declaration of
+  /// ::handle_contract_violation is available.
+  FunctionDecl *ContractViolationHandlerBuiltinDecl = nullptr;
+  /// Cached std::contracts::assertion_kind ([support.contract.cviol]).
+  EnumDecl *StdAssertionKindDecl = nullptr;
+  /// Cached std::contracts::evaluation_semantic ([support.contract.cviol]).
+  EnumDecl *StdEvaluationSemanticDecl = nullptr;
+  /// Cached std::contracts::detection_mode ([support.contract.cviol]).
+  EnumDecl *StdDetectionModeDecl = nullptr;
+  bool ContractViolationLookupDone = false;
+  ContractViolationLookupFailure ContractViolationLookupResult =
+      ContractViolationLookupFailure::None;
+  bool ContractViolationSupportDiagEmitted = false;
+  /// @}
+
   Decl *ActOnStaticAssertDeclaration(SourceLocation StaticAssertLoc,
                                      Expr *AssertExpr, Expr *AssertMessageExpr,
                                      SourceLocation RParenLoc);
@@ -6500,7 +6679,7 @@ public:
 
   void SetFunctionBodyKind(Decl *D, SourceLocation Loc, FnBodyKind BodyKind,
                            StringLiteral *DeletedMessage = nullptr);
-  void ActOnStartTrailingRequiresClause(Scope *S, Declarator &D);
+  void ActOnStartFunctionDeclaratorTail(Scope *S, Declarator &D);
   ExprResult ActOnFinishTrailingRequiresClause(ExprResult ConstraintExpr);
   ExprResult ActOnRequiresClause(ExprResult ConstraintExpr);
 
@@ -7610,8 +7789,8 @@ public:
   // __builtin_LINE(), __builtin_FUNCTION(), __builtin_FUNCSIG(),
   // __builtin_FILE(), __builtin_COLUMN(), __builtin_source_location()
   ExprResult ActOnSourceLocExpr(SourceLocIdentKind Kind,
-                                SourceLocation BuiltinLoc,
-                                SourceLocation RPLoc);
+                                SourceLocation BuiltinLoc, SourceLocation RPLoc,
+                                bool AllowPrivateImpl = false);
 
   // #embed
   ExprResult ActOnEmbedExpr(SourceLocation EmbedKeywordLoc,
@@ -8458,6 +8637,10 @@ public:
   ///
   /// \returns The type of 'this', if possible. Otherwise, returns a NULL type.
   QualType getCurrentThisType();
+
+  /// Apply the implicit const qualification required while a contract
+  /// predicate refers to its enclosing object.
+  QualType adjustThisTypeForContractPredicate(QualType Type);
 
   /// When non-NULL, the C++ 'this' expression is allowed despite the
   /// current context not being a non-static member function. In such cases,
@@ -11201,7 +11384,6 @@ public:
   void ActOnStartOfDeferStmt(SourceLocation DeferLoc, Scope *CurScope);
   void ActOnDeferStmtError(Scope *CurScope);
   StmtResult ActOnEndOfDeferStmt(Stmt *Body, Scope *CurScope);
-
   struct NamedReturnInfo {
     const VarDecl *Candidate;
 

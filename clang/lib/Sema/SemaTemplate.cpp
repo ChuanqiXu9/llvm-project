@@ -9846,6 +9846,14 @@ bool Sema::CheckFunctionTemplateSpecialization(
       // FIXME: We need an update record for this AST mutation.
       Specialization->setDeletedAsWritten(false);
     }
+    // Matching an explicit specialization can first synthesize a declaration
+    // of the primary template specialization. Contracts instantiated onto
+    // that declaration belong to the primary template and are not inherited
+    // by the explicit specialization. Preserve contracts only when this was
+    // already an explicit-specialization redeclaration chain.
+    if (TSK == TSK_Undeclared || TSK == TSK_ImplicitInstantiation) {
+      Specialization->setContractAnnotations(nullptr);
+    }
     // FIXME: We need an update record for this AST mutation.
     SpecInfo->setTemplateSpecializationKind(TSK_ExplicitSpecialization);
     MarkUnusedFileScopedDecl(Specialization);

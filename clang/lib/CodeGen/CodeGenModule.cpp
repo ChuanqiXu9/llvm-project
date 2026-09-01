@@ -2678,6 +2678,45 @@ StringRef CodeGenModule::getMangledName(GlobalDecl GD) {
   return MangledDeclNames[CanonicalGD] = Result.first->first();
 }
 
+StringRef
+CodeGenModule::getContractViolationHandlerName(QualType ViolationType) {
+  if (!ContractViolationHandlerName.empty())
+    return ContractViolationHandlerName;
+
+  // This declaration is only a temporary descriptor for the target C++ ABI
+  // mangler. It is created during CodeGen, is never added to a DeclContext,
+  // and is not part of the program AST.
+  ASTContext &Ctx = getContext();
+  IdentifierInfo &II = Ctx.Idents.get("handle_contract_violation");
+  QualType ParamType = Ctx.getLValueReferenceType(
+      ViolationType.getUnqualifiedType().withConst());
+  FunctionProtoType::ExtProtoInfo EPI;
+  QualType HandlerType = Ctx.getFunctionType(Ctx.VoidTy, ParamType, EPI);
+  auto *HandlerDecl = FunctionDecl::Create(
+      Ctx, Ctx.getTranslationUnitDecl(), SourceLocation(), SourceLocation(),
+      &II, HandlerType, Ctx.getTrivialTypeSourceInfo(HandlerType), SC_Extern,
+      /*UsesFPIntrin=*/false, /*isInlineSpecified=*/false,
+      /*hasWrittenPrototype=*/true);
+  // The real handler is in the global module even when the contract being
+  // emitted belongs to a named module. FunctionDecl::Create inherits the
+  // translation unit's current module ownership, so clear it explicitly for
+  // this ABI-only descriptor.
+  HandlerDecl->setModuleOwnershipKind(Decl::ModuleOwnershipKind::Unowned);
+  HandlerDecl->setImplicit();
+  auto *Param = ParmVarDecl::Create(
+      Ctx, HandlerDecl, SourceLocation(), SourceLocation(), /*Id=*/nullptr,
+      ParamType, Ctx.getTrivialTypeSourceInfo(ParamType), SC_None,
+      /*DefArg=*/nullptr);
+  Param->setScopeInfo(/*Depth=*/0, /*Index=*/0);
+  HandlerDecl->setParams(Param);
+
+  llvm::SmallString<128> Buffer;
+  llvm::raw_svector_ostream Out(Buffer);
+  getCXXABI().getMangleContext().mangleName(GlobalDecl(HandlerDecl), Out);
+  ContractViolationHandlerName = Out.str().str();
+  return ContractViolationHandlerName;
+}
+
 StringRef CodeGenModule::getBlockMangledName(GlobalDecl GD,
                                              const BlockDecl *BD) {
   MangleContext &MangleCtx = getCXXABI().getMangleContext();

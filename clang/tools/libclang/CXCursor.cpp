@@ -226,6 +226,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
 
   // Not exposed for now because '_Defer' is currently just a TS.
   case Stmt::DeferStmtClass:
+  case Stmt::ContractAssertStmtClass:
     K = CXCursor_UnexposedStmt;
     break;
 

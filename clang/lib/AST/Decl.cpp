@@ -3155,6 +3155,74 @@ void FunctionDecl::setDefaultedOrDeletedInfo(
   DefaultedOrDeletedInfo = Info;
 }
 
+static const FunctionDecl *
+getUninstantiatedContractPattern(const FunctionDecl *FD) {
+  if (const auto *Method = dyn_cast<CXXMethodDecl>(FD))
+    if (Method->getParent()->isLambda())
+      return nullptr;
+
+  const FunctionDecl *Pattern = FD;
+  if (const auto *InstantiationPattern = FD->getTemplateInstantiationPattern())
+    if (InstantiationPattern != FD)
+      Pattern = InstantiationPattern;
+
+  if (const auto *FTD = Pattern->getDescribedFunctionTemplate())
+    if (const auto *MemberPattern = FTD->getInstantiatedFromMemberTemplate())
+      Pattern = MemberPattern->getTemplatedDecl();
+
+  return Pattern == FD ? nullptr : Pattern;
+}
+
+static ContractAnnotation *
+getEffectiveFunctionContracts(const FunctionDecl *FD) {
+  if (auto *Contracts = FD->getDirectContractAnnotations())
+    return Contracts;
+
+  // Check the redeclaration chain without crossing from an explicit
+  // specialization into an implicit specialization of the primary template.
+  if (FD->getTemplateSpecializationKind() == TSK_ExplicitSpecialization) {
+    for (const auto *Previous = FD->getPreviousDecl();
+         Previous && Previous->getTemplateSpecializationKind() ==
+                         TSK_ExplicitSpecialization;
+         Previous = Previous->getPreviousDecl())
+      if (auto *Contracts = Previous->getDirectContractAnnotations())
+        return Contracts;
+    return nullptr;
+  }
+
+  if (const auto *First = FD->getCanonicalDecl())
+    if (auto *Contracts = First->getDirectContractAnnotations())
+      return Contracts;
+
+  // Instantiating a class does not instantiate contracts on its unused member
+  // functions. Keep the effective contract reachable through the member
+  // pattern until the function itself is needed.
+  if (const auto *Pattern = getUninstantiatedContractPattern(FD))
+    return getEffectiveFunctionContracts(Pattern);
+
+  return nullptr;
+}
+
+bool FunctionDecl::hasContracts() const { return getContractAnnotations(); }
+
+bool FunctionDecl::hasPreconditions() const {
+  for (auto *C = getContractAnnotations(); C; C = C->getNext())
+    if (C->isPrecondition())
+      return true;
+  return false;
+}
+
+bool FunctionDecl::hasPostconditions() const {
+  for (auto *C = getContractAnnotations(); C; C = C->getNext())
+    if (C->isPostcondition())
+      return true;
+  return false;
+}
+
+ContractAnnotation *FunctionDecl::getContractAnnotations() const {
+  return getEffectiveFunctionContracts(this);
+}
+
 void FunctionDecl::setDeletedAsWritten(bool D, StringLiteral *Message) {
   FunctionDeclBits.IsDeleted = D;
 
